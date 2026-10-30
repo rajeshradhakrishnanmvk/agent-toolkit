@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>agent-toolkit — one small tool a week</title>
+  <meta name="description" content="One small, single-file tool for AI agent builders, every week.">
+  <link rel="canonical" href="https://rajeshradhakrishnanmvk.github.io/agent-toolkit/">
+  <meta name="theme-color" content="#f4efe4" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141311" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231c1915'/%3E%3Cpath d='M5 24h22M6 24l7-12 4 5 8-10' fill='none' stroke='%23f3efe4' stroke-width='2'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --paper: #f4efe4;
+      --paper-2: #ebe4d4;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --rule: #d9d0c0;
+      --stamp: #9d3b1c;
+      --live: #0e6b45;
+      --code-bg: #1c1915;
+      --code-fg: #f4efe4;
+      --focus: #9d3b1c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #141311;
+        --paper-2: #1e1c19;
+        --ink: #f4efe4;
+        --muted: #c4bbae;
+        --rule: #3a342c;
+        --stamp: #f0a080;
+        --live: #8ddeaf;
+        --code-bg: #0c0b0a;
+        --code-fg: #f4efe4;
+        --focus: #f0a080;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+      font-size: 1.125rem;
+      line-height: 1.5;
+    }
+    a { color: inherit; text-underline-offset: 0.18em; }
+    a:hover { color: var(--stamp); }
+    a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .skip {
+      position: absolute;
+      left: 0.75rem;
+      top: 0;
+      transform: translateY(-120%);
+      background: var(--ink);
+      color: var(--paper);
+      padding: 0.4rem 0.7rem;
+      z-index: 2;
+    }
+    .skip:focus { transform: none; }
+    .band {
+      height: 0.55rem;
+      background: var(--ink);
+    }
+    .wrap {
+      width: min(40rem, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2.25rem 0 3.5rem;
+    }
+    .kicker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0;
+      margin: 0 0 1rem;
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(2.6rem, 8vw, 4.25rem);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      line-height: 0.95;
+    }
+    .lede {
+      margin: 1rem 0 0;
+      font-size: clamp(1.2rem, 2.5vw, 1.4rem);
+      line-height: 1.35;
+    }
+    section { margin-top: 2.75rem; }
+    h2 {
+      margin: 0 0 1rem;
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.75rem;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    ol.weeks {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px solid var(--rule);
+    }
+    ol.weeks > li {
+      padding: 1.1rem 0 1.2rem;
+      border-bottom: 1px solid var(--rule);
+    }
+    .week-id {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .badge { color: var(--muted); }
+    .badge.live { color: var(--live); }
+    h3 {
+      margin: 0.35rem 0 0.4rem;
+      font-size: 1.7rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    li p { margin: 0; }
+    .soon-note { color: var(--muted); }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.05rem;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      overflow-x: auto;
+      max-width: 100%;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.55;
+    }
+    code {
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.86em;
+    }
+    .kicker span + span::before {
+      content: "·";
+      margin: 0 0.55rem;
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 1rem;
+      margin: 0.25rem 0 0;
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      font-size: 0.85rem;
+    }
+    footer {
+      margin-top: 2.75rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--rule);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    footer p { margin: 0; }
+    ::selection { background: #ead7a2; color: #1c1915; }
+    @media (max-width: 640px) {
+      .wrap { width: min(40rem, calc(100% - 1.5rem)); padding-top: 1.5rem; }
+      .lede { font-size: 1.15rem; }
+      h3 { font-size: 1.45rem; }
+      pre { font-size: 0.75rem; padding: 0.85rem; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#weeks">Skip to tools</a>
+  <div class="band"></div>
+  <div class="wrap">
+    <header>
+      <p class="kicker"><span>Kochi</span><span>Build in public</span><span>Weekly</span></p>
+      <h1>agent-toolkit</h1>
+      <p class="lede">One small, single-file tool for AI agent builders, every week.</p>
+    </header>
+
+    <section aria-labelledby="weeks">
+      <h2 id="weeks">The series</h2>
+      <ol class="weeks">
+        <li>
+          <div class="week-id"><span>Week 1</span><span class="badge live">Live</span></div>
+          <h3>Budget guard</h3>
+          <p>Long agent tasks spend tokens, money, and tool calls before anyone looks. The guard takes a budget for the task and answers before each costly step: continue, warn near the limit, or stop and ask a human. Spend sits in a local JSON ledger, so a restart does not wipe the total.</p>
+        </li>
+        <li>
+          <div class="week-id"><span>Week 2</span><span class="badge">Coming soon</span></div>
+          <h3>Handoff checker</h3>
+          <p class="soon-note">Not published yet.</p>
+        </li>
+        <li>
+          <div class="week-id"><span>Week 3</span><span class="badge">Coming soon</span></div>
+          <h3>Work-claim ledger</h3>
+          <p class="soon-note">Not published yet.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="start">
+      <h2 id="start">Week 1 quickstart</h2>
+      <p>Python 3.9 or newer. No packages to install. From a clone of the repo:</p>
+      <pre><code>python3 budget_guard.py open fix-flaky-test \
+  --max-tokens 2500 --max-cost-usd 0.02 \
+  --max-tool-calls 4
+
+python3 budget_guard.py check fix-flaky-test \
+  --tokens 600 --tool-calls 1
+
+python3 budget_guard.py record fix-flaky-test \
+  --tokens 600 --tool-calls 1 --note read_failures
+
+python3 budget_guard.py status fix-flaky-test</code></pre>
+      <p>The same open, check, record, and status operations are a local MCP server: <code>python3 budget_guard.py serve</code>. <code>python3 demo.py</code> runs a short agent loop that gets warned, then stopped.</p>
+      <p class="links">
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit">Source on GitHub</a>
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/budget_guard.py">budget_guard.py</a>
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/README.md">README</a>
+      </p>
+    </section>
+
+    <footer>
+      <p>MIT. A visit is counted only when the browser is not sending Do Not Track. No cookies.</p>
+    </footer>
+  </div>
+<script>
+(function () {
+  if (navigator.doNotTrack === '1' || !navigator.sendBeacon) return;
+  var q = new URLSearchParams(location.search);
+  var data = JSON.stringify({
+    path: location.pathname,
+    referrer: document.referrer || '',
+    utm_source: q.get('utm_source') || '',
+    utm_medium: q.get('utm_medium') || '',
+    utm_campaign: q.get('utm_campaign') || '',
+    width: (window.screen && screen.width) || window.innerWidth || 0
+  });
+  navigator.sendBeacon('https://stats.srv1536099.hstgr.cloud/hit', data);
+})();
+</script>
+</body>
+</html>
