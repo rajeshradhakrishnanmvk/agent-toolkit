@@ -7,7 +7,7 @@ Built in public by Rajesh (Kochi). Each tool is announced on LinkedIn with a sho
 | Week | Tool | Status |
 | --- | --- | --- |
 | 1 | [Budget guard](#week-1--budget-guard) | Live |
-| 2 | Handoff checker | Coming soon |
+| 2 | [Handoff checker](#week-2--handoff-checker) | Live |
 | 3 | Work-claim ledger | Coming soon |
 
 The page is static HTML in `/docs`. GitHub Pages: branch `main`, folder `/docs`.
@@ -133,7 +133,137 @@ estimate_cost_usd(2000, 500, usd_per_million_input=3, usd_per_million_output=15)
 
 The CLI, the library, and the MCP server do not make network calls.
 
-### Tests
+## Week 2 — Handoff checker
+
+When one agent hands work to the next, the payload often drops the goal, the acceptance criteria, a file it cites, an open question, the constraints, the budget left, or who owns the next step.
+
+`handoff_checker.py` reads a handoff — JSON, or Markdown with front matter — and answers `ready`, `needs-fixes`, or `blocked`. `needs-fixes` comes with a punch list. Each line names the field and the edit.
+
+It is one file, standard library only. Use it as a Python module, a CLI, or a local MCP server. The checker does not send the handoff and does not rewrite it. A harness should refuse the handoff unless the status is `ready`.
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| `ready` | Every check passed. Send it. |
+| `needs-fixes` | The payload can be repaired. `problems` lists each fix. Do not send it yet. |
+| `blocked` | Do not send it. The budget left is exhausted, or the payload is over the size cap. Other problems are listed too. |
+
+### Checks
+
+- Required fields are present and non-empty: `goal`, `acceptance_criteria`, `owner`, `constraints`, `budget_left`.
+- Local paths cited in the text, or listed under `artifacts`, exist. They resolve against `--root`, or the working directory.
+- Acceptance criteria do not use vague words (`properly`, `etc`, `as needed`, and the rest of the list from `explain`).
+- No `TODO`, `TBD`, or `FIXME` is left in.
+- Questions are answered, or there are none. A criterion written as a question is a check, not an open question.
+- The payload is at most 16,384 bytes (override with `--max-bytes`, ceiling 2 MiB).
+
+A JSON schema file can require more fields and a few simple types. It cannot remove the built-in ones.
+
+### 30-second quickstart
+
+```bash
+python3 handoff_checker.py template --output handoff.md
+python3 handoff_checker.py check handoff.md
+python3 handoff_checker.py explain
+```
+
+The blank template is supposed to fail. Fill it in, then check again.
+
+```bash
+python3 demo_handoff.py
+```
+
+That demo is the week-2 recording: a sloppy handoff fails with a punch list, then the repaired one passes.
+
+`check` exits `0` on ready, `3` on needs-fixes, `4` on blocked, and `1` on a real error (unreadable file, broken schema). Add `--json` for the machine-readable decision.
+
+### As a library
+
+```python
+from handoff_checker import READY, HandoffChecker
+
+checker = HandoffChecker(root=".", schema="handoff.schema.json")
+decision = checker.check("handoff.md")
+if decision["status"] != READY:
+    for problem in decision["problems"]:
+        print(problem["message"])
+    raise SystemExit(1)
+```
+
+`check` accepts a dict, a path, or the document text. It does not write.
+
+### As an MCP server
+
+```bash
+python3 handoff_checker.py serve --root /absolute/path/to/agent-toolkit
+```
+
+Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `handoff_check`, `handoff_template`, `handoff_explain`.
+
+```json
+{
+  "mcpServers": {
+    "handoff-checker": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/agent-toolkit/handoff_checker.py",
+        "serve",
+        "--root",
+        "/absolute/path/to/agent-toolkit"
+      ]
+    }
+  }
+}
+```
+
+Use an absolute `--root`. Cited paths are resolved against it, and the client's working directory is not a reliable place for that.
+
+### Schema
+
+Built-in fields stay required. This file adds `ticket`:
+
+```json
+{
+  "required": ["ticket"],
+  "properties": {
+    "ticket": {"type": "string", "minLength": 3},
+    "priority": {"type": "string", "enum": ["low", "normal", "high"]}
+  },
+  "additionalProperties": false
+}
+```
+
+```bash
+python3 handoff_checker.py check handoff.md --schema handoff.schema.json
+```
+
+Supported keys are `required`, `properties` (`type`, `minLength`, `minItems`, `enum`, `description`), and `additionalProperties` set to `false`. Types are `string`, `number`, `integer`, `boolean`, `array`, and `object`.
+
+### Front matter
+
+Markdown handoffs open and close the header with a line that is just `---`. Values are scalars, lists, and one level of maps. Quote a list item that contains a colon.
+
+```markdown
+---
+goal: List week 2 on the project page as a live tool.
+owner: writer-agent
+budget_left: 4000 tokens
+constraints:
+  - Leave the visit counter script unchanged.
+acceptance_criteria:
+  - The week 2 row shows a Live badge.
+questions: []
+artifacts:
+  - docs/index.html
+---
+```
+
+JSON is the same object, without the fence. `questions` entries may be strings, or objects with `question` and `answer`.
+
+The CLI, the library, and the MCP server do not make network calls.
+
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v

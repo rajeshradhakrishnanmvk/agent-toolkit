@@ -198,9 +198,9 @@
           <p>Long agent tasks spend tokens, money, and tool calls before anyone looks. The guard takes a budget for the task and answers before each costly step: continue, warn near the limit, or stop and ask a human. Spend sits in a local JSON ledger, so a restart does not wipe the total.</p>
         </li>
         <li>
-          <div class="week-id"><span>Week 2</span><span class="badge">Coming soon</span></div>
+          <div class="week-id"><span>Week 2</span><span class="badge live">Live</span></div>
           <h3>Handoff checker</h3>
-          <p class="soon-note">Not published yet.</p>
+          <p>When one agent hands work to the next, the payload often drops the goal, the owner, the budget left, or a file it cites. The checker reads a JSON or Markdown handoff and answers ready, needs-fixes, or blocked, with the exact lines to change.</p>
         </li>
         <li>
           <div class="week-id"><span>Week 3</span><span class="badge">Coming soon</span></div>
@@ -225,9 +225,21 @@ python3 budget_guard.py record fix-flaky-test \
 
 python3 budget_guard.py status fix-flaky-test</code></pre>
       <p>The same open, check, record, and status operations are a local MCP server: <code>python3 budget_guard.py serve</code>. <code>python3 demo.py</code> runs a short agent loop that gets warned, then stopped.</p>
+    </section>
+
+    <section aria-labelledby="handoff">
+      <h2 id="handoff">Week 2 quickstart</h2>
+      <p>Python 3.9 or newer. No packages to install. From a clone of the repo:</p>
+      <pre><code>python3 handoff_checker.py template --output handoff.md
+
+python3 handoff_checker.py check handoff.md
+
+python3 handoff_checker.py explain</code></pre>
+      <p>The check answers ready, needs-fixes, or blocked. The blank template is supposed to fail until the goal, the owner, the budget left, the constraints, and the acceptance criteria are filled in. <code>python3 demo_handoff.py</code> shows a sloppy handoff failing, then the repaired one passing. The same check and template operations are a local MCP server: <code>python3 handoff_checker.py serve</code>.</p>
       <p class="links">
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit">Source on GitHub</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/budget_guard.py">budget_guard.py</a>
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/handoff_checker.py">handoff_checker.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/README.md">README</a>
       </p>
     </section>
