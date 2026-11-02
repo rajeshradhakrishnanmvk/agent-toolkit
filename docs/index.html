@@ -203,8 +203,13 @@
           <p>When one agent hands work to the next, the payload often drops the goal, the owner, the budget left, or a file it cites. The checker reads a JSON or Markdown handoff and answers ready, needs-fixes, or blocked, with the exact lines to change.</p>
         </li>
         <li>
-          <div class="week-id"><span>Week 3</span><span class="badge">Coming soon</span></div>
+          <div class="week-id"><span>Week 3</span><span class="badge live">Live</span></div>
           <h3>Work-claim ledger</h3>
+          <p>When several agents share a repo, two of them will pick up the same task. The ledger lets one agent claim an item for a limited time. The other is told who holds it. When the lease expires, the claim is free to take over.</p>
+        </li>
+        <li>
+          <div class="week-id"><span>Week 4</span><span class="badge">Coming soon</span></div>
+          <h3>Next week</h3>
           <p class="soon-note">Not published yet.</p>
         </li>
       </ol>
@@ -236,10 +241,24 @@ python3 handoff_checker.py check handoff.md
 
 python3 handoff_checker.py explain</code></pre>
       <p>The check answers ready, needs-fixes, or blocked. The blank template is supposed to fail until the goal, the owner, the budget left, the constraints, and the acceptance criteria are filled in. <code>python3 demo_handoff.py</code> shows a sloppy handoff failing, then the repaired one passing. The same check and template operations are a local MCP server: <code>python3 handoff_checker.py serve</code>.</p>
+    </section>
+
+    <section aria-labelledby="claims">
+      <h2 id="claims">Week 3 quickstart</h2>
+      <p>Python 3.9 or newer. No packages to install. From a clone of the repo:</p>
+      <pre><code>python3 work_claim.py take fix-flaky-test --owner agent-a --ttl 600
+
+python3 work_claim.py list
+
+python3 work_claim.py renew fix-flaky-test --owner agent-a
+
+python3 work_claim.py done fix-flaky-test --owner agent-a</code></pre>
+      <p>A second agent that takes the same item gets busy while the lease is running. After it expires, that take succeeds. <code>python3 demo_work_claim.py</code> shows the blocked agent, then the takeover. The same operations are a local MCP server: <code>python3 work_claim.py serve</code>.</p>
       <p class="links">
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit">Source on GitHub</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/budget_guard.py">budget_guard.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/handoff_checker.py">handoff_checker.py</a>
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/work_claim.py">work_claim.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/README.md">README</a>
       </p>
     </section>
