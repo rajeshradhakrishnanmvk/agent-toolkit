@@ -8,7 +8,8 @@ Built in public by Rajesh (Kochi). Each tool is announced on LinkedIn with a sho
 | --- | --- | --- |
 | 1 | [Budget guard](#week-1--budget-guard) | Live |
 | 2 | [Handoff checker](#week-2--handoff-checker) | Live |
-| 3 | Work-claim ledger | Coming soon |
+| 3 | [Work-claim ledger](#week-3--work-claim-ledger) | Live |
+| 4 | Next week | Coming soon |
 
 The page is static HTML in `/docs`. GitHub Pages: branch `main`, folder `/docs`.
 
@@ -260,6 +261,100 @@ artifacts:
 ```
 
 JSON is the same object, without the fence. `questions` entries may be strings, or objects with `question` and `answer`.
+
+The CLI, the library, and the MCP server do not make network calls.
+
+## Week 3 — Work-claim ledger
+
+When several agents share a repo, two of them will pick up the same task. `work_claim.py` is a file-backed ledger: an agent claims an item under its owner id for a lease (a TTL). Another agent that tries the same item is told who holds it. When the lease expires, the claim is stale and the next agent can take it over.
+
+Renew extends a lease you hold. Release gives the item back. Done marks it finished, so a later take will not redo it unless you pass `--reopen`.
+
+It is one file, standard library only. Use it as a Python module, a CLI, or a local MCP server. The owner id is a label, not a secret. The ledger trusts the caller. It does not stop another process. The harness should skip an item when the result is `busy`.
+
+### Results
+
+| Result | Meaning |
+| --- | --- |
+| `taken` | You hold the item. The lease starts now. |
+| `taken-over` | You hold it now. `previous_owner` names who had it. |
+| `held` | You already hold it. Call renew to extend the lease. |
+| `busy` | Someone else holds an unexpired lease. |
+| `renewed` | Your lease now starts from this moment. |
+| `released` | You gave the item up. |
+| `done` | You marked it finished. |
+| `not-owner` | That item is held by someone else. |
+| `absent` | There is no claim for that item. |
+| `closed` | It is done. Take it again only with `--reopen`. |
+
+`list` shows open claims. Expired rows are stale and takeable. Done rows stay out of the default list. `list_claims` is the method name because `list` is a Python builtin. The CLI and MCP tool are `list` / `claim_list`.
+
+### 30-second quickstart
+
+```bash
+python3 work_claim.py take fix-flaky-test --owner agent-a --ttl 600
+python3 work_claim.py list
+python3 work_claim.py renew fix-flaky-test --owner agent-a
+python3 work_claim.py done fix-flaky-test --owner agent-a
+```
+
+`take`, `renew`, `release`, and `done` exit `0` when `ok` is true, `3` when the claim is refused (`busy`, `not-owner`, `closed`, `absent`), and `1` on a real error. `list` and `explain` exit `0`. Add `--json` for the machine-readable result.
+
+```bash
+python3 demo_work_claim.py
+```
+
+That demo is the week-3 recording: agent A claims a task, agent B is blocked, the lease expires, and agent B takes it over.
+
+### As a library
+
+```python
+from work_claim import WorkLedger
+
+ledger = WorkLedger(".agent-toolkit/work-claims.json")
+claim = ledger.take("fix-flaky-test", "agent-a", ttl_seconds=600)
+if not claim["ok"]:
+    raise SystemExit(claim["result"])
+
+ledger.renew("fix-flaky-test", "agent-a")
+ledger.done("fix-flaky-test", "agent-a")
+```
+
+The path you pass is the file. Relative paths in the CLI and the MCP server are a separate rule: they resolve against `--root`. Pass a `clock` callable that returns a timezone-aware datetime when you want to test expiry without sleeping.
+
+### As an MCP server
+
+```bash
+python3 work_claim.py serve --root /absolute/path/to/agent-toolkit
+```
+
+Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `claim_take`, `claim_renew`, `claim_release`, `claim_done`, `claim_list`, `claim_explain`.
+
+```json
+{
+  "mcpServers": {
+    "work-claim": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/agent-toolkit/work_claim.py",
+        "serve",
+        "--root",
+        "/absolute/path/to/agent-toolkit"
+      ]
+    }
+  }
+}
+```
+
+Use an absolute `--root`. A relative `ledger` or `root` on a tool call is resolved against that root, not the process working directory. If a client asks for a protocol version this server does not speak, the server answers with `2025-06-18`.
+
+### Ledger
+
+Default path: `.agent-toolkit/work-claims.json` under `--root`. `$WORK_CLAIM_LEDGER` overrides it. An absolute path is used as given. A relative one resolves against `--root`. A relative `$WORK_CLAIM_LEDGER` may not climb above that directory.
+
+The file is pretty-printed JSON. A sibling `work-claims.json.lock` serializes readers and writers across processes (`flock` on Linux and macOS). Writes go to a temp file in the same directory and replace the ledger, so a crash mid-write keeps the previous claims. The default lease is 900 seconds. The maximum is 86400 (24 hours). The lease is over at `expires_at`, and that instant is already takeable. The owner can renew after expiry until someone else takes the item.
+
+Finished items are kept (up to 100) so a later take does not redo them by accident. This repo gitignores `.agent-toolkit/`. Notes you pass are stored in plain text.
 
 The CLI, the library, and the MCP server do not make network calls.
 
