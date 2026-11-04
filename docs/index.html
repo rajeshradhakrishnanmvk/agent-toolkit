@@ -195,12 +195,12 @@
         <li>
           <div class="week-id"><span>Week 1</span><span class="badge live">Live</span></div>
           <h3>Budget guard</h3>
-          <p>Long agent tasks spend tokens, money, and tool calls before anyone looks. The guard takes a budget for the task and answers before each costly step: continue, warn near the limit, or stop and ask a human. Spend sits in a local JSON ledger, so a restart does not wipe the total.</p>
+          <p>Long agent tasks spend tokens, money, and tool calls before anyone looks. The guard takes a budget for the task and answers before each costly step: continue, warn near the limit, or stop and ask a human. Spend sits in a local JSON ledger, so a restart does not wipe the total. <code>step</code> records the last step's real usage and checks the next one in the same call. A relative ledger path resolves against <code>--root</code>.</p>
         </li>
         <li>
           <div class="week-id"><span>Week 2</span><span class="badge live">Live</span></div>
           <h3>Handoff checker</h3>
-          <p>When one agent hands work to the next, the payload often drops the goal, the owner, the budget left, or a file it cites. The checker reads a JSON or Markdown handoff and answers ready, needs-fixes, or blocked, with the exact lines to change.</p>
+          <p>When one agent hands work to the next, the payload often drops the goal, the owner, the budget left, or a file it cites. The checker reads a JSON or Markdown handoff and answers ready, needs-fixes, or blocked, with the exact lines to change. A relative handoff path resolves against <code>--root</code>. A negative budget left is blocked, the same as zero.</p>
         </li>
         <li>
           <div class="week-id"><span>Week 3</span><span class="badge live">Live</span></div>
@@ -229,7 +229,8 @@ python3 budget_guard.py record fix-flaky-test \
   --tokens 600 --tool-calls 1 --note read_failures
 
 python3 budget_guard.py status fix-flaky-test</code></pre>
-      <p>The same open, check, record, and status operations are a local MCP server: <code>python3 budget_guard.py serve</code>. <code>python3 demo.py</code> runs a short agent loop that gets warned, then stopped.</p>
+      <p><code>step</code> records the usage that just happened and checks the next step in one call: <code>python3 budget_guard.py step fix-flaky-test --tokens 600 --next-tokens 400</code>.</p>
+      <p>The same open, check, record, step, and status operations are a local MCP server: <code>python3 budget_guard.py serve</code>. <code>python3 demo.py</code> runs a short agent loop that gets warned, then stopped. Pass <code>--root</code> when the ledger path is relative.</p>
     </section>
 
     <section aria-labelledby="handoff">

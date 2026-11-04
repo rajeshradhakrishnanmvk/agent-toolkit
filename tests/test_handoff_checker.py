@@ -315,6 +315,47 @@ Ship it.
         self.assertEqual(fixed["status"], READY, fixed["problems"])
         self.assertEqual(len(fixed["paths"]["found"]), 2)
 
+    def test_negative_budget_left_is_blocked(self) -> None:
+        for budget in ("-500 tokens", "-10 tokens", -10, "-$1.50", "$-0.25", "-0.01 USD", "- 4 tokens"):
+            blocked = self.checker.check(_valid(budget_left=budget))
+            self.assertEqual(blocked["status"], BLOCKED, budget)
+            self.assertEqual(blocked["problems"][0]["code"], "budget-exhausted", budget)
+        ready = self.checker.check(_valid(budget_left="4000 tokens"))
+        self.assertEqual(ready["status"], READY, ready["problems"])
+
+    def test_json_todo_names_its_field_and_is_not_cut_off(self) -> None:
+        notes = ("background " * 40) + "TODO: confirm wording"
+        text = json.dumps(_valid(notes=notes), separators=(",", ":"))
+        self.assertNotIn("\n", text)
+        self.assertGreater(len(text), 200)
+        decision = self.checker.check(text)
+        todo = [problem for problem in decision["problems"] if problem["code"] == "todo-left"]
+        self.assertEqual(len(todo), 1)
+        self.assertEqual(todo[0]["field"], "notes")
+        self.assertIn("TODO: confirm wording", todo[0]["message"])
+        self.assertNotIn('{"goal"', todo[0]["message"])
+
+    def test_unquoted_colon_names_the_list_item(self) -> None:
+        document = """\
+---
+goal: Ship the row.
+owner: writer-agent
+budget_left: 4000 tokens
+constraints:
+  - Keep: the counter script
+acceptance_criteria:
+  - Run: pytest exits 0
+questions: []
+---
+"""
+        decision = self.checker.check(document)
+        messages = [problem["message"] for problem in decision["problems"]]
+        self.assertTrue(any("unquoted colon" in message and message.startswith("acceptance_criteria") for message in messages))
+        self.assertTrue(any("unquoted colon" in message and message.startswith("constraints") for message in messages))
+        self.assertFalse(any("is empty" in message for message in messages))
+        self.assertIn("Run: pytest exits 0", " ".join(messages))
+        self.assertEqual(decision["status"], NEEDS_FIXES)
+
     def test_check_does_not_write(self) -> None:
         before = sorted(self.root.iterdir())
         self.checker.check(_valid(artifacts=["docs/missing.md"]))
@@ -455,7 +496,29 @@ class McpTest(unittest.TestCase):
             }
         )
         assert fallback is not None
-        self.assertEqual(fallback["result"]["protocolVersion"], "2024-11-05")
+        self.assertEqual(fallback["result"]["protocolVersion"], "2025-06-18")
+        newer = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25"},
+            }
+        )
+        assert newer is not None
+        self.assertEqual(newer["result"]["protocolVersion"], "2025-06-18")
+        unknown_tool = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {"name": "handoff_nope", "arguments": {}},
+            }
+        )
+        assert unknown_tool is not None
+        self.assertEqual(unknown_tool["error"]["code"], -32602)
+        self.assertNotIn("result", unknown_tool)
+        self.assertNotIn("isError", json.dumps(unknown_tool))
         self.assertIsNone(handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         missing = handle_message(
             {
@@ -572,6 +635,135 @@ Ship the row.
         )
         rules = json.loads(bodies[5]["result"]["content"][0]["text"])
         self.assertIn("as needed", rules["vague_terms"])
+
+
+_READY_MD = """\
+---
+goal: Publish the week 2 row on the project page.
+owner: writer-agent
+budget_left: 4000 tokens
+constraints:
+  - Leave the visit counter script unchanged.
+acceptance_criteria:
+  - The week 2 row shows a Live badge.
+questions: []
+artifacts: []
+---
+
+Ship the row.
+"""
+
+
+class PathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "repo"
+        self.decoy = self.root / "decoy"
+        self.repo.mkdir()
+        self.decoy.mkdir()
+        (self.repo / "h.md").write_text(_READY_MD, encoding="utf-8")
+        (self.decoy / "h.md").write_text("not a handoff\n", encoding="utf-8")
+        self._cwd = Path.cwd()
+
+    def tearDown(self) -> None:
+        os.chdir(self._cwd)
+        self._tmp.cleanup()
+
+    def test_relative_path_uses_root_not_cwd(self) -> None:
+        os.chdir(self.decoy)
+        decision = HandoffChecker(root=self.repo).check("h.md")
+        self.assertEqual(decision["status"], READY, decision["problems"])
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["check", "h.md", "--root", str(self.repo)])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("ready", out.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = main(["check", "missing.md", "--root", str(self.repo)])
+        self.assertEqual(code, 1)
+        self.assertIn(str(self.repo / "missing.md"), err.getvalue())
+        self.assertNotIn("no handoff file at missing.md", err.getvalue())
+        from handoff_checker import _Defaults
+
+        defaults = _Defaults(str(self.repo), None, None)
+        called = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "handoff_check", "arguments": {"path": "h.md"}},
+            },
+            defaults,
+        )
+        assert called is not None
+        self.assertFalse(called["result"]["isError"])
+        body = json.loads(called["result"]["content"][0]["text"])
+        self.assertEqual(body["status"], READY)
+        per_call = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "handoff_check",
+                    "arguments": {"path": "h.md", "root": str(self.repo)},
+                },
+            },
+            _Defaults(str(self.decoy), None, None),
+        )
+        assert per_call is not None
+        self.assertFalse(per_call["result"]["isError"], per_call)
+        self.assertEqual(json.loads(per_call["result"]["content"][0]["text"])["status"], READY)
+        missing = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "handoff_check", "arguments": {"path": "missing.md"}},
+            },
+            defaults,
+        )
+        assert missing is not None
+        self.assertTrue(missing["result"]["isError"])
+        self.assertIn(str(self.repo / "missing.md"), missing["result"]["content"][0]["text"])
+        escaped = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "handoff_check", "arguments": {"path": "../h.md"}},
+            },
+            defaults,
+        )
+        assert escaped is not None
+        self.assertTrue(escaped["result"]["isError"])
+        self.assertIn("escapes", escaped["result"]["content"][0]["text"])
+        env = os.environ.copy()
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "handoff_checker.py"), "serve", "--root", str(self.repo)],
+            input=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "handoff_check", "arguments": {"path": "h.md"}},
+                }
+            )
+            + "\n",
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+            cwd="/",
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        reply = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertFalse(reply["result"]["isError"])
+        self.assertEqual(json.loads(reply["result"]["content"][0]["text"])["status"], READY)
 
 
 class DemoAndSourceTest(unittest.TestCase):

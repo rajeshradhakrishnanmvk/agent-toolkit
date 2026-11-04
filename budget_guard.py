@@ -28,6 +28,7 @@ No third-party dependencies. Python 3.9+.
   python3 budget_guard.py open TASK --max-tokens 2500 --max-tool-calls 4
   python3 budget_guard.py check TASK --tokens 600 --tool-calls 1
   python3 budget_guard.py record TASK --tokens 600 --tool-calls 1 --note read_file
+  python3 budget_guard.py step TASK --tokens 600 --next-tokens 400
   python3 budget_guard.py status TASK
   python3 budget_guard.py serve
 """
@@ -44,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 VERSION = "0.1.0"
 CONTINUE = "continue"
@@ -214,27 +215,50 @@ class BudgetGuard:
 
         def mutate(data: dict[str, Any]) -> dict[str, Any]:
             task = self._require(data, task_id)
-            if spend["tokens"] or spend["cost_usd"] or spend["tool_calls"] or note:
-                task["spent"] = {
-                    "tokens": task["spent"]["tokens"] + spend["tokens"],
-                    "cost_usd": round(task["spent"]["cost_usd"] + spend["cost_usd"], 8),
-                    "tool_calls": task["spent"]["tool_calls"] + spend["tool_calls"],
-                }
-                task["events"].append(
-                    {
-                        "at": _iso(self._now()),
-                        "tokens": spend["tokens"],
-                        "cost_usd": spend["cost_usd"],
-                        "tool_calls": spend["tool_calls"],
-                        "note": note,
-                    }
-                )
-                overflow = len(task["events"]) - self.max_events
-                if overflow > 0:
-                    del task["events"][:overflow]
-                    task["events_dropped"] = int(task.get("events_dropped", 0)) + overflow
-                task["updated_at"] = _iso(self._now())
+            self._apply_spend(task, spend, note)
             return self._view(task, proposed=_zero_spend())
+
+        return self._transaction(mutate, create=False, write=True)
+
+    def step(
+        self,
+        task_id: str,
+        *,
+        tokens: int = 0,
+        cost_usd: float = 0.0,
+        tool_calls: int = 0,
+        note: str = "",
+        next_tokens: int = 0,
+        next_cost_usd: float = 0.0,
+        next_tool_calls: int = 0,
+    ) -> dict[str, Any]:
+        """Record the last step's real usage, then check the next step.
+
+        One lock, so the ledger does not lag a turn behind the model. The
+        record is kept even when it is already over budget. The decision is
+        about ``next_*``, on top of the new total. ``recorded`` and ``next``
+        are included on the same view ``record`` returns.
+        """
+        task_id = _task_id(task_id)
+        spend = _clean_spend(tokens, cost_usd, tool_calls)
+        upcoming = _clean_spend(next_tokens, next_cost_usd, next_tool_calls)
+        note = _clean_note(note)
+
+        def mutate(data: dict[str, Any]) -> dict[str, Any]:
+            task = self._require(data, task_id)
+            self._apply_spend(task, spend, note)
+            view = self._view(task, proposed=upcoming)
+            view["recorded"] = {
+                "tokens": int(spend["tokens"]),
+                "cost_usd": float(spend["cost_usd"]),
+                "tool_calls": int(spend["tool_calls"]),
+            }
+            view["next"] = {
+                "tokens": int(upcoming["tokens"]),
+                "cost_usd": float(upcoming["cost_usd"]),
+                "tool_calls": int(upcoming["tool_calls"]),
+            }
+            return view
 
         return self._transaction(mutate, create=False, write=True)
 
@@ -246,6 +270,29 @@ class BudgetGuard:
             return self._view(self._require(data, task_id), proposed=_zero_spend())
 
         return self._transaction(read, create=False, write=False)
+
+    def _apply_spend(self, task: dict[str, Any], spend: dict[str, int | float], note: str) -> None:
+        if not (spend["tokens"] or spend["cost_usd"] or spend["tool_calls"] or note):
+            return
+        task["spent"] = {
+            "tokens": task["spent"]["tokens"] + spend["tokens"],
+            "cost_usd": round(task["spent"]["cost_usd"] + spend["cost_usd"], 8),
+            "tool_calls": task["spent"]["tool_calls"] + spend["tool_calls"],
+        }
+        task["events"].append(
+            {
+                "at": _iso(self._now()),
+                "tokens": spend["tokens"],
+                "cost_usd": spend["cost_usd"],
+                "tool_calls": spend["tool_calls"],
+                "note": note,
+            }
+        )
+        overflow = len(task["events"]) - self.max_events
+        if overflow > 0:
+            del task["events"][:overflow]
+            task["events_dropped"] = int(task.get("events_dropped", 0)) + overflow
+        task["updated_at"] = _iso(self._now())
 
     def _now(self) -> datetime:
         current = self._clock()
@@ -723,6 +770,9 @@ def format_human(payload: dict[str, Any]) -> str:
         f"{'task':<8}  {payload['task_id']}",
         f"{'reason':<8}  {payload['reason']}",
     ]
+    if "recorded" in payload and "next" in payload:
+        lines.append(f"{'recorded':<8}  {_spend_bits(payload['recorded'])}")
+        lines.append(f"{'next':<8}  {_spend_bits(payload['next'])}")
     for dim in payload["dimensions"]:
         if dim["limit"] is None:
             continue
@@ -730,6 +780,14 @@ def format_human(payload: dict[str, Any]) -> str:
     if payload.get("ask_human"):
         lines.append(f"{'ask':<8}  {payload['ask_human']}")
     return "\n".join(lines) + "\n"
+
+
+def _spend_bits(spend: dict[str, Any]) -> str:
+    return (
+        f"{_grouped(int(spend['tokens']))} tokens, "
+        f"{_money(spend['cost_usd'])}, "
+        f"{_grouped(int(spend['tool_calls']))} calls"
+    )
 
 
 def _human_dim(dim: dict[str, Any]) -> str:
@@ -767,7 +825,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Warn still proceeds. The guard does not kill your agent; stop when\n"
             "the decision is stop-and-ask-human.\n"
             "\n"
-            "Ledger default: .agent-toolkit/budget-ledger.json or $BUDGET_GUARD_LEDGER."
+            "Ledger default: .agent-toolkit/budget-ledger.json under --root,\n"
+            "or $BUDGET_GUARD_LEDGER. Relative paths resolve against --root.\n"
+            "\n"
+            "step records the last step, then checks the next one, in one call."
         ),
     )
     parser.add_argument("--version", action="version", version=f"budget-guard {VERSION}")
@@ -775,9 +836,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_ledger(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument(
+            "--root",
+            default=None,
+            help="directory a relative ledger path is resolved against (default: working directory)",
+        )
+        cmd.add_argument(
             "--ledger",
             default=None,
-            help="JSON ledger path (default: .agent-toolkit/budget-ledger.json or $BUDGET_GUARD_LEDGER)",
+            help="JSON ledger path, absolute or relative to --root",
         )
         cmd.add_argument("--json", action="store_true", help="print the decision as JSON")
 
@@ -816,6 +882,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_spend(record_cmd)
     record_cmd.add_argument("--note", default="", help="short label stored in the ledger")
 
+    step_cmd = sub.add_parser(
+        "step",
+        help="record the last step's real usage, then check the next step",
+    )
+    add_ledger(step_cmd)
+    step_cmd.add_argument("task_id")
+    add_spend(step_cmd)
+    step_cmd.add_argument("--note", default="", help="short label stored with the recorded spend")
+    step_cmd.add_argument("--next-tokens", type=int, default=0, help="tokens the next step will spend")
+    step_cmd.add_argument("--next-cost-usd", type=float, default=0.0, help="dollars the next step will spend")
+    step_cmd.add_argument(
+        "--next-tool-calls",
+        type=int,
+        default=0,
+        help="tool calls the next step will spend",
+    )
+
     status_cmd = sub.add_parser("status", help="show committed spend and the current decision")
     add_ledger(status_cmd)
     status_cmd.add_argument("task_id")
@@ -834,7 +917,16 @@ def build_parser() -> argparse.ArgumentParser:
         "serve",
         help="MCP server on stdio (one JSON-RPC message per line)",
     )
-    serve_cmd.add_argument("--ledger", default=None, help="default ledger for tool calls")
+    serve_cmd.add_argument(
+        "--root",
+        default=None,
+        help="directory a relative ledger path is resolved against (default: working directory)",
+    )
+    serve_cmd.add_argument(
+        "--ledger",
+        default=None,
+        help="default ledger for tool calls, absolute or relative to --root",
+    )
     return parser
 
 
@@ -846,7 +938,7 @@ def _render(payload: dict[str, Any], *, as_json: bool) -> None:
 
 
 def _exit_for(command: str, payload: dict[str, Any]) -> int:
-    if command in {"check", "record", "status"} and payload["decision"] == STOP_AND_ASK:
+    if command in {"check", "record", "status", "step"} and payload["decision"] == STOP_AND_ASK:
         return 3
     return 0
 
@@ -875,9 +967,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 sys.stdout.write(f"{amount}\n")
             return 0
+        root = cli_root(getattr(args, "root", None))
+        ledger = resolve_ledger(root, getattr(args, "ledger", None))
         if args.command == "serve":
-            return serve(_resolve_ledger(args.ledger))
-        guard = BudgetGuard(_resolve_ledger(args.ledger))
+            return serve(_Defaults(root, ledger))
+        guard = BudgetGuard(ledger)
         if args.command == "open":
             payload = guard.open_task(
                 args.task_id,
@@ -903,6 +997,17 @@ def main(argv: list[str] | None = None) -> int:
                 tool_calls=args.tool_calls,
                 note=args.note,
             )
+        elif args.command == "step":
+            payload = guard.step(
+                args.task_id,
+                tokens=args.tokens,
+                cost_usd=args.cost_usd,
+                tool_calls=args.tool_calls,
+                note=args.note,
+                next_tokens=args.next_tokens,
+                next_cost_usd=args.next_cost_usd,
+                next_tool_calls=args.next_tool_calls,
+            )
         elif args.command == "status":
             payload = guard.status(args.task_id)
         else:  # pragma: no cover - argparse requires a command
@@ -917,24 +1022,95 @@ def main(argv: list[str] | None = None) -> int:
     return _exit_for(args.command, payload)
 
 
-def _resolve_ledger(path: str | None) -> Path:
-    if path:
-        return Path(path)
-    return _default_ledger()
+class _Defaults(NamedTuple):
+    root: Path
+    ledger: Path
+
+
+def cli_root(value: str | None) -> Path:
+    """The directory relative ledger paths resolve against. Captured absolutely."""
+    if value is None or value.strip() == "":
+        return Path.cwd()
+    return Path(os.path.abspath(value.strip()))
+
+
+def resolve_ledger(root: Path, explicit: str | None) -> Path:
+    """Pick the ledger file. Relative paths resolve against ``root``, not a later cwd.
+
+    An explicit path may use ``..``. ``$BUDGET_GUARD_LEDGER`` may not leave ``root``
+    unless it is absolute. The default is ``.agent-toolkit/budget-ledger.json``.
+    """
+    if explicit is not None and str(explicit).strip() != "":
+        return _place(root, str(explicit).strip(), escape=True)
+    env = os.environ.get("BUDGET_GUARD_LEDGER")
+    if env is not None and env.strip() != "":
+        return _place(root, env.strip(), escape=False)
+    return _place(root, DEFAULT_LEDGER_PATH.as_posix(), escape=False)
+
+
+def _place(root: Path, value: str, *, escape: bool) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    if escape:
+        # root is absolute, so abspath does not consult a later cwd.
+        return Path(os.path.abspath(os.path.join(str(root), value)))
+    return _under_root(root, path)
+
+
+def _under_root(root: Path, path: Path) -> Path:
+    """Join ``path`` onto ``root`` and refuse to climb above ``root``."""
+    base_parts = list(root.parts)
+    stack = list(base_parts)
+    for part in path.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if len(stack) <= len(base_parts):
+                raise BudgetError("path escapes the root")
+            stack.pop()
+            continue
+        stack.append(part)
+    if len(stack) < len(base_parts):
+        raise BudgetError("path escapes the root")
+    return Path(*stack)
+
+
+def _coerce_defaults(value: Path | _Defaults | None) -> _Defaults:
+    if isinstance(value, _Defaults):
+        return value
+    if isinstance(value, Path):
+        ledger = value if value.is_absolute() else Path(os.path.abspath(value))
+        return _Defaults(ledger.parent, ledger)
+    root = Path.cwd()
+    return _Defaults(root, resolve_ledger(root, None))
 
 
 # --- MCP (stdio, newline-delimited JSON-RPC) --------------------------------
 
 _MCP_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
+_MCP_NEWEST = _MCP_PROTOCOLS[-1]
+_TOOL_NAMES = {
+    "budget_open",
+    "budget_check",
+    "budget_record",
+    "budget_step",
+    "budget_status",
+}
 _MCP_INSTRUCTIONS = (
     "Budget guard for one task at a time. Call budget_open once with at least "
     "one limit (max_tokens, max_cost_usd, max_tool_calls, max_wall_clock_seconds). "
-    "There is no built-in price list: pass cost_usd yourself. Before every costly "
-    "step call budget_check with the spend you are about to incur. If decision is "
-    "continue or warn, do the step, then budget_record the actual spend. warn means "
-    "near the limit and still ok to proceed. If decision is stop-and-ask-human, do "
-    "not take the step; show ask_human to the user. budget_check does not record "
-    "spend. Two checks do not stack. budget_status reads the ledger."
+    "There is no built-in price list: pass cost_usd yourself. Each turn, call "
+    "budget_step with the previous step's real usage (tokens, cost_usd, "
+    "tool_calls) and the next step's estimate (next_tokens, next_cost_usd, "
+    "next_tool_calls). That records the real spend and checks the next step "
+    "in one call, so the ledger does not lag a turn. budget_check then "
+    "budget_record still work. warn means near the limit and still ok to "
+    "proceed. If decision is stop-and-ask-human, do not take the next step; "
+    "show ask_human to the user. Results are decision, reason, spent, and "
+    "remaining. A relative ledger_path resolves against root, then the server "
+    "--root, not the process cwd. If a client asks for a protocol version this "
+    "server does not speak, the answer is 2025-06-18."
 )
 
 _LIMIT_PROPS = {
@@ -955,10 +1131,16 @@ _LIMIT_PROPS = {
 }
 
 
-def _ledger_prop() -> dict[str, Any]:
+def _place_props() -> dict[str, Any]:
     return {
-        "type": "string",
-        "description": "JSON ledger path. Defaults to the server --ledger path.",
+        "root": {
+            "type": "string",
+            "description": "Resolve a relative ledger against this directory. Relative to the server --root.",
+        },
+        "ledger_path": {
+            "type": "string",
+            "description": "JSON ledger path. Relative paths resolve against root, not the process cwd.",
+        },
     }
 
 
@@ -967,7 +1149,27 @@ def _tool_defs() -> list[dict[str, Any]]:
         "tokens": {"type": "integer", "minimum": 0, "default": 0},
         "cost_usd": {"type": "number", "minimum": 0, "default": 0},
         "tool_calls": {"type": "integer", "minimum": 0, "default": 0},
-        "ledger_path": _ledger_prop(),
+        **_place_props(),
+    }
+    next_props = {
+        "next_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Tokens the next step will spend.",
+        },
+        "next_cost_usd": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Dollars the next step will spend.",
+        },
+        "next_tool_calls": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Tool calls the next step will spend.",
+        },
     }
     return [
         {
@@ -983,7 +1185,7 @@ def _tool_defs() -> list[dict[str, Any]]:
                     "task_id": {"type": "string"},
                     **_LIMIT_PROPS,
                     "reset": {"type": "boolean", "default": False},
-                    "ledger_path": _ledger_prop(),
+                    **_place_props(),
                 },
                 "required": ["task_id"],
                 "additionalProperties": False,
@@ -1025,13 +1227,35 @@ def _tool_defs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "budget_step",
+            "description": (
+                "Record the last step's real usage, then check the next step. "
+                "Pass tokens, cost_usd, and tool_calls for what just happened, "
+                "and next_tokens, next_cost_usd, and next_tool_calls for the step "
+                "you are about to take. If decision is stop-and-ask-human, do not "
+                "take that step. The result is decision, reason, spent, remaining, "
+                "recorded, and next."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    **spend_props,
+                    "note": {"type": "string", "description": "Short label, max 200 characters."},
+                    **next_props,
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "budget_status",
             "description": "Read committed spend, limits, and the current decision. Does not record anything.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "ledger_path": _ledger_prop(),
+                    **_place_props(),
                 },
                 "required": ["task_id"],
                 "additionalProperties": False,
@@ -1040,11 +1264,33 @@ def _tool_defs() -> list[dict[str, Any]]:
     ]
 
 
-def _tool_result(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-        "isError": False,
+def _mcp_decision(view: dict[str, Any]) -> dict[str, Any]:
+    """Short decision for the model. The library and the CLI still return the full view."""
+    remaining: dict[str, Any] = {}
+    for dim in view["dimensions"]:
+        if dim["remaining"] is None:
+            continue
+        remaining[dim["name"]] = dim["remaining"]
+    body: dict[str, Any] = {
+        "task_id": view["task_id"],
+        "decision": view["decision"],
+        "ok_to_proceed": view["ok_to_proceed"],
+        "reason": view["reason"],
+        "ask_human": view["ask_human"],
+        "spent": view["spent"],
+        "remaining": remaining,
+        "limits": view["limits"],
     }
+    if "recorded" in view:
+        body["recorded"] = view["recorded"]
+    if "next" in view:
+        body["next"] = view["next"]
+    return body
+
+
+def _tool_result(payload: dict[str, Any]) -> dict[str, Any]:
+    text = json.dumps(_mcp_decision(payload), separators=(",", ":"), ensure_ascii=False)
+    return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
 def _tool_error(message: str) -> dict[str, Any]:
@@ -1058,13 +1304,31 @@ def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
-def _guard_for(args: dict[str, Any], default_ledger: Path) -> BudgetGuard:
-    raw = args.get("ledger_path")
-    if raw is None or raw == "":
-        return BudgetGuard(default_ledger)
-    if not isinstance(raw, str):
-        raise BudgetError("ledger_path must be a string")
-    return BudgetGuard(raw)
+def _guard_for(args: dict[str, Any], defaults: _Defaults) -> BudgetGuard:
+    root = defaults.root
+    raw_root = args.get("root")
+    if raw_root not in (None, ""):
+        if not isinstance(raw_root, str):
+            raise BudgetError("root must be a string")
+        root = _place(defaults.root, raw_root.strip(), escape=False)
+    raw_ledger = args.get("ledger_path")
+    if raw_ledger not in (None, ""):
+        if not isinstance(raw_ledger, str):
+            raise BudgetError("ledger_path must be a string")
+        path = _place(root, raw_ledger.strip(), escape=False)
+    elif raw_root not in (None, ""):
+        path = _place(root, DEFAULT_LEDGER_PATH.as_posix(), escape=False)
+    else:
+        path = defaults.ledger
+    return BudgetGuard(path)
+
+
+def _protocol(requested: Any) -> str:
+    # A version we speak is echoed. Anything else, including a newer one,
+    # gets the newest version this server speaks.
+    if isinstance(requested, str) and requested in _MCP_PROTOCOLS:
+        return requested
+    return _MCP_NEWEST
 
 
 def _reject_unknown(args: dict[str, Any], allowed: set[str]) -> None:
@@ -1078,7 +1342,7 @@ def _optional(args: dict[str, Any], key: str) -> Any:
     return None if value is None else value
 
 
-def _dispatch_tool(name: str, args: dict[str, Any], default_ledger: Path) -> dict[str, Any]:
+def _dispatch_tool(name: str, args: dict[str, Any], defaults: _Defaults) -> dict[str, Any]:
     if not isinstance(args, dict):
         raise BudgetError("arguments must be an object")
     if name == "budget_open":
@@ -1093,9 +1357,10 @@ def _dispatch_tool(name: str, args: dict[str, Any], default_ledger: Path) -> dic
                 "warn_ratio",
                 "reset",
                 "ledger_path",
+                "root",
             },
         )
-        guard = _guard_for(args, default_ledger)
+        guard = _guard_for(args, defaults)
         warn = args.get("warn_ratio", DEFAULT_WARN_RATIO)
         reset = args.get("reset", False)
         if type(reset) is not bool:
@@ -1111,8 +1376,8 @@ def _dispatch_tool(name: str, args: dict[str, Any], default_ledger: Path) -> dic
         )
         return _tool_result(payload)
     if name == "budget_check":
-        _reject_unknown(args, {"task_id", "tokens", "cost_usd", "tool_calls", "ledger_path"})
-        guard = _guard_for(args, default_ledger)
+        _reject_unknown(args, {"task_id", "tokens", "cost_usd", "tool_calls", "ledger_path", "root"})
+        guard = _guard_for(args, defaults)
         payload = guard.check(
             args.get("task_id"),  # type: ignore[arg-type]
             tokens=args.get("tokens", 0),
@@ -1122,9 +1387,9 @@ def _dispatch_tool(name: str, args: dict[str, Any], default_ledger: Path) -> dic
         return _tool_result(payload)
     if name == "budget_record":
         _reject_unknown(
-            args, {"task_id", "tokens", "cost_usd", "tool_calls", "note", "ledger_path"}
+            args, {"task_id", "tokens", "cost_usd", "tool_calls", "note", "ledger_path", "root"}
         )
-        guard = _guard_for(args, default_ledger)
+        guard = _guard_for(args, defaults)
         payload = guard.record(
             args.get("task_id"),  # type: ignore[arg-type]
             tokens=args.get("tokens", 0),
@@ -1133,15 +1398,44 @@ def _dispatch_tool(name: str, args: dict[str, Any], default_ledger: Path) -> dic
             note=args.get("note", ""),
         )
         return _tool_result(payload)
+    if name == "budget_step":
+        _reject_unknown(
+            args,
+            {
+                "task_id",
+                "tokens",
+                "cost_usd",
+                "tool_calls",
+                "note",
+                "next_tokens",
+                "next_cost_usd",
+                "next_tool_calls",
+                "ledger_path",
+                "root",
+            },
+        )
+        guard = _guard_for(args, defaults)
+        payload = guard.step(
+            args.get("task_id"),  # type: ignore[arg-type]
+            tokens=args.get("tokens", 0),
+            cost_usd=args.get("cost_usd", 0.0),
+            tool_calls=args.get("tool_calls", 0),
+            note="" if args.get("note") is None else args.get("note"),
+            next_tokens=args.get("next_tokens", 0),
+            next_cost_usd=args.get("next_cost_usd", 0.0),
+            next_tool_calls=args.get("next_tool_calls", 0),
+        )
+        return _tool_result(payload)
     if name == "budget_status":
-        _reject_unknown(args, {"task_id", "ledger_path"})
-        guard = _guard_for(args, default_ledger)
+        _reject_unknown(args, {"task_id", "ledger_path", "root"})
+        guard = _guard_for(args, defaults)
         return _tool_result(guard.status(args.get("task_id")))  # type: ignore[arg-type]
-    return _tool_error(f"unknown tool {name!r}")
+    raise BudgetError(f"unknown tool {name!r}")
 
 
-def handle_message(message: Any, default_ledger: Path) -> dict[str, Any] | None:
+def handle_message(message: Any, default_ledger: Path | _Defaults | None = None) -> dict[str, Any] | None:
     """Handle one JSON-RPC message. Notifications return None."""
+    defaults = _coerce_defaults(default_ledger)
     if not isinstance(message, dict) or message.get("jsonrpc") not in (None, "2.0"):
         return _rpc_error(message.get("id") if isinstance(message, dict) else None, -32600, "invalid request")
     if "method" not in message:
@@ -1178,23 +1472,31 @@ def handle_message(message: Any, default_ledger: Path) -> dict[str, Any] | None:
         return _rpc_error(req_id if has_id else None, -32602, "invalid params")
 
     if method == "initialize":
-        requested = params.get("protocolVersion", "2024-11-05")
-        protocol = requested if requested in _MCP_PROTOCOLS else "2024-11-05"
         return result(
             {
-                "protocolVersion": protocol,
+                "protocolVersion": _protocol(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "budget-guard", "version": VERSION},
                 "instructions": _MCP_INSTRUCTIONS,
             }
         )
     if method == "tools/call":
-        name = params.get("name")
-        arguments = params.get("arguments") or {}
-        if not isinstance(name, str):
-            return result(_tool_error("tools/call requires a tool name"))
+        tool_name = params.get("name")
+        if not isinstance(tool_name, str) or not tool_name:
+            if not has_id:
+                return None
+            return _rpc_error(req_id, -32602, "tools/call requires a tool name")
+        if tool_name not in _TOOL_NAMES:
+            if not has_id:
+                return None
+            return _rpc_error(req_id, -32602, f"unknown tool {tool_name!r}")
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return result(_tool_error("arguments must be an object"))
         try:
-            body = _dispatch_tool(name, arguments, default_ledger)
+            body = _dispatch_tool(tool_name, arguments, defaults)
         except BudgetError as exc:
             body = _tool_error(str(exc))
         return result(body)
@@ -1203,8 +1505,9 @@ def handle_message(message: Any, default_ledger: Path) -> dict[str, Any] | None:
     return _rpc_error(req_id, -32601, f"method not found: {method}")
 
 
-def serve(default_ledger: Path) -> int:
+def serve(default_ledger: Path | _Defaults) -> int:
     """Speak MCP over stdio. One JSON object per line. Logs never touch stdout."""
+    default_ledger = _coerce_defaults(default_ledger)
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     if hasattr(sys.stdout, "reconfigure"):

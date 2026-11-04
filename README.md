@@ -35,6 +35,8 @@ Any one of tokens, US dollars, tool calls, or wall-clock can trip the guard. Uns
 
 `check` does not spend. Two checks do not stack: each one is a hypothetical on the committed total. `record` writes what actually happened, even if that total is over budget.
 
+`step` does both in one call: it records the last step's real usage, then checks the next step against the new total. Pass the tokens, dollars, and tool calls that just happened, and `next_*` for the step you are about to take. The decision is about that next step. This is the call to use when the model would otherwise record a turn late. `check` and `record` stay as they are.
+
 ### 30-second quickstart
 
 ```bash
@@ -46,7 +48,13 @@ python3 budget_guard.py record fix-flaky-test --tokens 600 --tool-calls 1 --note
 python3 budget_guard.py status fix-flaky-test
 ```
 
-`check`, `record`, and `status` exit `0` on continue or warn, `3` on stop-and-ask-human, and `1` on a real error. Add `--json` for the machine-readable decision.
+To record the last step and check the next one together:
+
+```bash
+python3 budget_guard.py step fix-flaky-test --tokens 600 --next-tokens 400
+```
+
+`check`, `record`, `step`, and `status` exit `0` on continue or warn, `3` on stop-and-ask-human, and `1` on a real error. Add `--json` for the machine-readable decision. The CLI JSON is the full decision. Over MCP the same decision is the short form: `decision`, `reason`, `spent`, `remaining`, and `limits` (plus `recorded` and `next` on `step`).
 
 ```bash
 python3 demo.py
@@ -75,6 +83,9 @@ if decision["decision"] == STOP_AND_ASK:
 
 # ...do the step, then record what it actually cost...
 guard.record("fix-flaky-test", tokens=600, tool_calls=1, note="read_failures")
+
+# Or, instead of record plus a later check, record and check together:
+# guard.step("fix-flaky-test", tokens=600, tool_calls=1, next_tokens=400)
 ```
 
 `open_task` is the method name because `open` is a Python builtin. The CLI and MCP tool are both called `open` / `budget_open`.
@@ -85,7 +96,9 @@ guard.record("fix-flaky-test", tokens=600, tool_calls=1, note="read_failures")
 python3 budget_guard.py serve --ledger /absolute/path/to/budget-ledger.json
 ```
 
-Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `budget_open`, `budget_check`, `budget_record`, `budget_status`.
+Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `budget_open`, `budget_check`, `budget_record`, `budget_step`, `budget_status`.
+
+The server speaks protocol versions `2024-11-05`, `2025-03-26`, and `2025-06-18`. A client that asks for any other version, including a newer one, gets `2025-06-18`. An unknown tool name is a JSON-RPC `-32602` error, not an `isError` tool result.
 
 ```json
 {
@@ -103,11 +116,11 @@ Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude
 }
 ```
 
-Use an absolute `--ledger`. The client's working directory is not a reliable place for the file.
+A relative `--ledger`, `$BUDGET_GUARD_LEDGER`, or per-call `ledger_path` resolves against `--root`, not the process working directory. Pass an absolute `--root` when the client does not start the server in the project directory. An absolute ledger path is used as given. A relative `root` on a tool call stays under the server `--root`.
 
 ### Ledger
 
-Default path: `.agent-toolkit/budget-ledger.json`, or `$BUDGET_GUARD_LEDGER`.
+Default path: `.agent-toolkit/budget-ledger.json` under `--root`, or `$BUDGET_GUARD_LEDGER`. A relative `$BUDGET_GUARD_LEDGER` may not climb above `--root`. An explicit `--ledger` may.
 
 The file is pretty-printed JSON. A sibling `budget-ledger.json.lock` serializes readers and writers. Writes go to a temp file and replace the ledger, so a crash mid-write keeps the previous totals. The recent 100 events stay in the file; older ones are counted in `events_dropped` and the totals still include them.
 
@@ -153,9 +166,10 @@ It is one file, standard library only. Use it as a Python module, a CLI, or a lo
 ### Checks
 
 - Required fields are present and non-empty: `goal`, `acceptance_criteria`, `owner`, `constraints`, `budget_left`.
-- Local paths cited in the text, or listed under `artifacts`, exist. They resolve against `--root`, or the working directory.
+- Local paths cited in the text, or listed under `artifacts`, exist. They resolve against `--root`, or the working directory. A relative handoff `path` uses that same directory, not the process working directory, and a missing file is reported with the absolute path.
 - Acceptance criteria do not use vague words (`properly`, `etc`, `as needed`, and the rest of the list from `explain`).
-- No `TODO`, `TBD`, or `FIXME` is left in.
+- No `TODO`, `TBD`, or `FIXME` is left in. The message names the field that holds it, and the quote is the text around the marker.
+- `budget_left` of zero or a negative amount (`-500 tokens`, `-10`, `-$1.50`) is blocked. A positive amount is not.
 - Questions are answered, or there are none. A criterion written as a question is a check, not an open question.
 - The payload is at most 16,384 bytes (override with `--max-bytes`, ceiling 2 MiB).
 
@@ -202,6 +216,8 @@ python3 handoff_checker.py serve --root /absolute/path/to/agent-toolkit
 
 Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `handoff_check`, `handoff_template`, `handoff_explain`.
 
+The server speaks protocol versions `2024-11-05`, `2025-03-26`, and `2025-06-18`. A client that asks for any other version, including a newer one, gets `2025-06-18`. An unknown tool name is a JSON-RPC `-32602` error, not an `isError` tool result.
+
 ```json
 {
   "mcpServers": {
@@ -218,7 +234,7 @@ Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude
 }
 ```
 
-Use an absolute `--root`. Cited paths are resolved against it, and the client's working directory is not a reliable place for that.
+Use an absolute `--root`. A relative `path` resolves against the per-call `root` if you pass one, otherwise this `--root`, not the process working directory. A relative per-call `root` stays under the server `--root`. Cited paths use that same directory.
 
 ### Schema
 
@@ -243,7 +259,7 @@ Supported keys are `required`, `properties` (`type`, `minLength`, `minItems`, `e
 
 ### Front matter
 
-Markdown handoffs open and close the header with a line that is just `---`. Values are scalars, lists, and one level of maps. Quote a list item that contains a colon.
+Markdown handoffs open and close the header with a line that is just `---`. Values are scalars, lists, and one level of maps. Quote a list item that contains a colon. An unquoted colon is read as a map, and the check says so instead of reporting the list as empty.
 
 ```markdown
 ---
