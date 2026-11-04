@@ -320,7 +320,31 @@ class McpTest(unittest.TestCase):
             self.path,
         )
         assert fallback is not None
-        self.assertEqual(fallback["result"]["protocolVersion"], "2024-11-05")
+        self.assertEqual(fallback["result"]["protocolVersion"], "2025-06-18")
+        newer = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25"},
+            },
+            self.path,
+        )
+        assert newer is not None
+        self.assertEqual(newer["result"]["protocolVersion"], "2025-06-18")
+        unknown_tool = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {"name": "budget_nope", "arguments": {}},
+            },
+            self.path,
+        )
+        assert unknown_tool is not None
+        self.assertEqual(unknown_tool["error"]["code"], -32602)
+        self.assertNotIn("result", unknown_tool)
+        self.assertNotIn("isError", json.dumps(unknown_tool))
         self.assertIsNone(
             handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"}, self.path)
         )
@@ -413,11 +437,18 @@ class McpTest(unittest.TestCase):
         self.assertEqual([body["id"] for body in bodies], [1, 2, 3, 4, 5, 6, 7])
         names = [tool["name"] for tool in bodies[1]["result"]["tools"]]
         self.assertEqual(
-            names, ["budget_open", "budget_check", "budget_record", "budget_status"]
+            names,
+            ["budget_open", "budget_check", "budget_record", "budget_step", "budget_status"],
         )
-        checked = json.loads(bodies[3]["result"]["content"][0]["text"])
+        checked_text = bodies[3]["result"]["content"][0]["text"]
+        self.assertNotIn("\n", checked_text)
+        checked = json.loads(checked_text)
         self.assertEqual(checked["decision"], WARN)
         self.assertEqual(checked["spent"]["tokens"], 0)
+        self.assertIn("remaining", checked)
+        self.assertIn("limits", checked)
+        self.assertNotIn("dimensions", checked)
+        self.assertLess(len(checked_text), 800)
         recorded = json.loads(bodies[4]["result"]["content"][0]["text"])
         self.assertEqual(recorded["spent"]["tokens"], 90)
         stopped = json.loads(bodies[6]["result"]["content"][0]["text"])
@@ -425,6 +456,203 @@ class McpTest(unittest.TestCase):
         self.assertFalse(stopped["ok_to_proceed"])
         stored = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(stored["tasks"]["job"]["spent"]["tokens"], 90)
+
+
+class StepAndPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "repo"
+        self.decoy = self.root / "decoy"
+        self.repo.mkdir()
+        self.decoy.mkdir()
+        self.path = self.repo / "ledger.json"
+        self._cwd = Path.cwd()
+
+    def tearDown(self) -> None:
+        os.chdir(self._cwd)
+        self._tmp.cleanup()
+
+    def test_step_records_the_last_usage_before_the_next_check(self) -> None:
+        guard = BudgetGuard(self.path)
+        guard.open_task("job", max_tokens=1000, warn_ratio=0.8)
+        first = guard.step("job", next_tokens=400)
+        self.assertEqual(first["decision"], CONTINUE)
+        self.assertEqual(first["spent"]["tokens"], 0)
+        self.assertEqual(first["recorded"]["tokens"], 0)
+        self.assertEqual(first["next"]["tokens"], 400)
+        self.assertIn("dimensions", first)
+        second = guard.step("job", tokens=700, tool_calls=1, note="model", next_tokens=400)
+        self.assertEqual(second["spent"]["tokens"], 700)
+        self.assertEqual(second["recorded"]["tokens"], 700)
+        self.assertEqual(second["next"]["tokens"], 400)
+        self.assertEqual(second["decision"], STOP_AND_ASK)
+        self.assertEqual(second["projected"]["tokens"], 1100)
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["tasks"]["job"]["spent"]["tokens"], 700)
+        self.assertEqual(stored["tasks"]["job"]["events"][-1]["note"], "model")
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(
+                [
+                    "step",
+                    "--ledger",
+                    str(self.path),
+                    "job",
+                    "--tokens",
+                    "50",
+                    "--next-tokens",
+                    "300",
+                    "--json",
+                ]
+            )
+        self.assertEqual(code, 3, err.getvalue())
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["spent"]["tokens"], 750)
+        self.assertEqual(payload["projected"]["tokens"], 1050)
+        self.assertEqual(payload["decision"], STOP_AND_ASK)
+
+    def test_mcp_step_is_compact(self) -> None:
+        handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "budget_open",
+                    "arguments": {"task_id": "job", "max_tokens": 1000},
+                },
+            },
+            self.path,
+        )
+        stepped = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "budget_step",
+                    "arguments": {
+                        "task_id": "job",
+                        "tokens": 900,
+                        "note": "turn",
+                        "next_tokens": 200,
+                    },
+                },
+            },
+            self.path,
+        )
+        assert stepped is not None
+        text = stepped["result"]["content"][0]["text"]
+        self.assertNotIn("\n", text)
+        self.assertLess(len(text), 700)
+        body = json.loads(text)
+        self.assertEqual(body["spent"]["tokens"], 900)
+        self.assertEqual(body["recorded"]["tokens"], 900)
+        self.assertEqual(body["next"]["tokens"], 200)
+        self.assertEqual(body["decision"], STOP_AND_ASK)
+        self.assertNotIn("dimensions", body)
+        self.assertIn("remaining", body)
+        full = BudgetGuard(self.path).check("job")
+        self.assertIn("dimensions", full)
+        self.assertEqual(full["spent"]["tokens"], 900)
+
+    def test_relative_ledger_uses_root_not_cwd(self) -> None:
+        os.chdir(self.decoy)
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(
+                [
+                    "open",
+                    "--root",
+                    str(self.repo),
+                    "--ledger",
+                    "ledger.json",
+                    "job",
+                    "--max-tokens",
+                    "100",
+                ]
+            )
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue((self.repo / "ledger.json").is_file())
+        self.assertFalse((self.decoy / "ledger.json").exists())
+        self.assertFalse((Path.cwd() / "ledger.json").exists())
+        from budget_guard import _Defaults
+
+        defaults = _Defaults(self.repo, self.repo / ".agent-toolkit" / "budget-ledger.json")
+        opened = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "budget_open",
+                    "arguments": {
+                        "task_id": "other",
+                        "max_tokens": 50,
+                        "ledger_path": "other.json",
+                    },
+                },
+            },
+            defaults,
+        )
+        assert opened is not None
+        self.assertFalse(opened["result"]["isError"], opened)
+        self.assertTrue((self.repo / "other.json").is_file())
+        self.assertFalse((self.decoy / "other.json").exists())
+        escaped = handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "budget_open",
+                    "arguments": {
+                        "task_id": "job",
+                        "max_tokens": 10,
+                        "root": "..",
+                        "ledger_path": "nope.json",
+                    },
+                },
+            },
+            defaults,
+        )
+        assert escaped is not None
+        self.assertTrue(escaped["result"]["isError"])
+        self.assertIn("escapes", escaped["result"]["content"][0]["text"])
+        self.assertFalse((self.decoy / "nope.json").exists())
+        env = os.environ.copy()
+        env.pop("BUDGET_GUARD_LEDGER", None)
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "budget_guard.py"), "serve", "--root", str(self.repo)],
+            input=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "budget_open",
+                        "arguments": {
+                            "task_id": "stdio",
+                            "max_tokens": 10,
+                            "ledger_path": "stdio.json",
+                        },
+                    },
+                }
+            )
+            + "\n",
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+            cwd="/",
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.repo / "stdio.json").is_file())
+        self.assertFalse(Path("/stdio.json").exists())
 
 
 class DemoAndPageTest(unittest.TestCase):

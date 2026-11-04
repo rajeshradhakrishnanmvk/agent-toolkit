@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -151,8 +152,14 @@ _EXHAUSTED_WORDS = {
     "over budget",
     "spent",
 }
+# Zero, or a negative amount. A positive amount such as "4000 tokens" must not match.
 _EXHAUSTED_RE = re.compile(
-    r"\$?0+(?:\.0+)?(?:\s*(?:tokens?|usd|dollars?))?"
+    r"(?:"
+    r"\$?0+(?:\.0+)?"
+    r"|- ?\$?\d+(?:\.\d+)?"
+    r"|\$-\d+(?:\.\d+)?"
+    r")"
+    r"(?:\s*(?:tokens?|usd|dollars?))?"
 )
 
 _KEY = re.compile(r"^[A-Za-z_][\w-]*$")
@@ -360,14 +367,15 @@ class HandoffChecker:
 
         ``handoff`` may be a dict, a file path, or the document text (JSON
         or Markdown). A string is read as a file when it does not look like
-        a document and that path exists.
+        a document. A relative path resolves against ``root``, not a later
+        working directory.
         """
         base = self.root if root is None else Path(root)
         resolved_root = _clean_root(Path.cwd() if base is None else base)
         limit = self.max_bytes if max_bytes is None else _as_max_bytes(max_bytes)
         schema_value = self.schema if schema is None else schema
         schema_data, schema_label = _load_schema(schema_value)
-        loaded = _load_handoff(handoff)
+        loaded = _load_handoff(handoff, resolved_root)
         if loaded.unparsed or loaded.fields is None:
             problems = [_too_large(loaded.size, limit)]
             return _decision(
@@ -429,7 +437,7 @@ def _evaluate(
             )
         )
     problems.extend(_question_problems(fields, _prose(fields, body)))
-    problems.extend(_todo_problems(scan))
+    problems.extend(_todo_problems(fields, body))
     budget = _budget_problem(fields)
     if budget is not None:
         problems.append(budget)
@@ -553,6 +561,12 @@ def _check_criteria(value: Any, hint: str) -> list[dict[str, Any]]:
         if isinstance(item, str) and not _is_blank(item):
             real += 1
             continue
+        colon = _unquoted_colon("acceptance_criteria", index, item)
+        if colon is not None:
+            problems.append(
+                _problem("bad-shape", SEVERITY_FIX, colon, field="acceptance_criteria")
+            )
+            continue
         if item is None or (isinstance(item, str) and _is_blank(item)):
             problems.append(
                 _problem(
@@ -574,9 +588,7 @@ def _check_criteria(value: Any, hint: str) -> list[dict[str, Any]]:
                     field="acceptance_criteria",
                 )
             )
-    if real == 0:
-        return [_missing("acceptance_criteria", "empty", hint)]
-    return problems
+    return _nonempty_list_problems(problems, real, "acceptance_criteria", hint)
 
 
 def _check_constraints(value: Any, hint: str) -> list[dict[str, Any]]:
@@ -601,17 +613,61 @@ def _check_constraints(value: Any, hint: str) -> list[dict[str, Any]]:
         if isinstance(item, str) and not _is_blank(item):
             real += 1
             continue
-        problems.append(
-            _problem(
-                "bad-shape",
-                SEVERITY_FIX,
-                f"constraints item {index} is empty. Remove it or write the limit.",
-                field="constraints",
+        colon = _unquoted_colon("constraints", index, item)
+        if colon is not None:
+            problems.append(_problem("bad-shape", SEVERITY_FIX, colon, field="constraints"))
+            continue
+        if isinstance(item, str) or item is None:
+            problems.append(
+                _problem(
+                    "bad-shape",
+                    SEVERITY_FIX,
+                    f"constraints item {index} is empty. Remove it or write the limit.",
+                    field="constraints",
+                )
             )
-        )
-    if real == 0:
-        return [_missing("constraints", "empty", hint)]
-    return problems
+        else:
+            problems.append(
+                _problem(
+                    "bad-shape",
+                    SEVERITY_FIX,
+                    f"constraints item {index} is not text.",
+                    field="constraints",
+                )
+            )
+    return _nonempty_list_problems(problems, real, "constraints", hint)
+
+
+def _nonempty_list_problems(
+    problems: list[dict[str, Any]],
+    real: int,
+    field: str,
+    hint: str,
+) -> list[dict[str, Any]]:
+    if real != 0:
+        return problems
+    specific = [
+        item
+        for item in problems
+        if "unquoted colon" in item["message"] or "is not text" in item["message"]
+    ]
+    if specific:
+        return specific
+    return [_missing(field, "empty", hint)]
+
+
+def _unquoted_colon(field: str, index: int, item: Any) -> str | None:
+    """A list item with a colon is parsed as a one-key map. Say so."""
+    if not isinstance(item, dict) or len(item) != 1:
+        return None
+    key, value = next(iter(item.items()))
+    if not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    shown = f"{key}: {value}".strip()
+    return (
+        f"{field} item {index} has an unquoted colon, so it was read as a map "
+        f"({_quote(shown)}). Quote the whole item so the colon stays in the text."
+    )
 
 
 def _missing(field: str, kind: str, hint: str) -> dict[str, Any]:
@@ -889,30 +945,63 @@ def _is_resolved(item: dict[str, Any]) -> bool:
     return False
 
 
-def _todo_problems(text: str) -> list[dict[str, Any]]:
+def _todo_problems(fields: dict[str, Any], body: str) -> list[dict[str, Any]]:
     problems = []
-    seen: set[str] = set()
-    for match in _TODO_RE.finditer(text):
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end())
-        if line_end == -1:
-            line_end = len(text)
-        snippet = " ".join(text[line_start:line_end].split())
-        if len(snippet) > 120:
-            snippet = snippet[:117].rstrip() + "..."
-        if snippet.lower() in seen:
-            continue
-        seen.add(snippet.lower())
-        label = match.group(1).upper()
-        problems.append(
-            _problem(
-                "todo-left",
-                SEVERITY_FIX,
-                f'{label} left in: "{snippet}" Finish it or delete it.',
-                field="body",
+    for field, text in _todo_texts(fields, body):
+        seen: set[str] = set()
+        for match in _TODO_RE.finditer(text):
+            snippet = _todo_snippet(text, match)
+            if snippet.lower() in seen:
+                continue
+            seen.add(snippet.lower())
+            label = match.group(1).upper()
+            problems.append(
+                _problem(
+                    "todo-left",
+                    SEVERITY_FIX,
+                    f'{label} left in: "{snippet}" Finish it or delete it.',
+                    field=field,
+                )
             )
-        )
     return problems
+
+
+def _todo_texts(fields: dict[str, Any], body: str) -> list[tuple[str, str]]:
+    sources: list[tuple[str, str]] = []
+    if body:
+        sources.append(("body", body))
+    for key, value in fields.items():
+        if key == "body":
+            continue
+        for text in _walk_strings(value):
+            if text:
+                sources.append((key, text))
+    return sources
+
+
+def _todo_snippet(text: str, match: re.Match[str]) -> str:
+    """Quote the marker. A long line is windowed around the match, not the start."""
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.end())
+    if line_end == -1:
+        line_end = len(text)
+    raw = text[line_start:line_end]
+    flat = " ".join(raw.split())
+    if len(flat) <= 120:
+        return flat
+    rel_start = match.start() - line_start
+    rel_end = match.end() - line_start
+    pad = 40
+    start = max(0, rel_start - pad)
+    end = min(len(raw), rel_end + pad)
+    chunk = " ".join(raw[start:end].split())
+    if start > 0:
+        chunk = "..." + chunk
+    if end < len(raw):
+        chunk = chunk + "..."
+    if len(chunk) > 120:
+        chunk = chunk[:117].rstrip() + "..."
+    return chunk
 
 
 def _budget_problem(fields: dict[str, Any]) -> dict[str, Any] | None:
@@ -1194,7 +1283,7 @@ def _schema_int(value: Any, label: str) -> None:
         raise HandoffError(f"{label} must be an integer >= 0")
 
 
-def _load_handoff(handoff: str | Path | dict[str, Any]) -> _Loaded:
+def _load_handoff(handoff: str | Path | dict[str, Any], root: Path) -> _Loaded:
     if isinstance(handoff, dict):
         raw = json.dumps(handoff, ensure_ascii=False, separators=(",", ":"))
         size = len(raw.encode("utf-8"))
@@ -1203,20 +1292,12 @@ def _load_handoff(handoff: str | Path | dict[str, Any]) -> _Loaded:
         body = handoff.get("body") if isinstance(handoff.get("body"), str) else ""
         return _Loaded(handoff, body, None, size, "dict", False)
     if isinstance(handoff, Path):
-        return _load_file(handoff)
+        return _load_file(_resolve_handoff_path(handoff, root))
     if not isinstance(handoff, str):
         raise HandoffError("handoff must be a dict, a path, or document text")
-    if _is_file_arg(handoff):
-        return _load_file(Path(handoff))
+    if not _is_document(handoff):
+        return _load_file(_resolve_handoff_path(handoff, root))
     leading = handoff.lstrip("\ufeff").lstrip()
-    looks_like_doc = (
-        not leading
-        or "\n" in handoff
-        or leading.startswith("{")
-        or leading.startswith("---")
-    )
-    if not looks_like_doc:
-        raise HandoffError(f"no handoff file at {handoff}")
     size = len(handoff.encode("utf-8"))
     if size > HARD_CAP_BYTES:
         return _Loaded(None, "", None, size, "unparsed", True)
@@ -1225,11 +1306,19 @@ def _load_handoff(handoff: str | Path | dict[str, Any]) -> _Loaded:
     return _Loaded(parsed["fields"], parsed["body"], handoff, size, fmt, False)
 
 
-def _is_file_arg(value: str) -> bool:
+def _is_document(value: str) -> bool:
     leading = value.lstrip("\ufeff").lstrip()
-    if not leading or "\n" in value or leading.startswith("{") or leading.startswith("---"):
-        return False
-    return Path(value).is_file()
+    return (
+        not leading
+        or "\n" in value
+        or leading.startswith("{")
+        or leading.startswith("---")
+    )
+
+
+def _resolve_handoff_path(handoff: str | Path, root: Path) -> Path:
+    """Relative handoff paths join ``root``. ``root`` is absolute, so cwd is not used."""
+    return _place(root, str(handoff).strip(), escape=True)
 
 
 def _load_file(path: Path) -> _Loaded:
@@ -1540,11 +1629,47 @@ def _as_max_bytes(value: Any) -> int:
 
 
 def _clean_root(root: Path) -> Path:
-    if not root.exists():
-        raise HandoffError(f"root directory does not exist: {root}")
-    if not root.is_dir():
-        raise HandoffError(f"root is not a directory: {root}")
-    return root
+    absolute = Path(os.path.abspath(root))
+    if not absolute.exists():
+        raise HandoffError(f"root directory does not exist: {absolute}")
+    if not absolute.is_dir():
+        raise HandoffError(f"root is not a directory: {absolute}")
+    return absolute
+
+
+def cli_root(value: str | None) -> Path:
+    """The directory relative paths resolve against. Captured absolutely."""
+    if value is None or value.strip() == "":
+        return Path.cwd()
+    return Path(os.path.abspath(value.strip()))
+
+
+def _place(root: Path, value: str, *, escape: bool) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    if escape:
+        # root is absolute, so abspath does not consult a later cwd.
+        return Path(os.path.abspath(os.path.join(str(root), value)))
+    return _under_root(root, path)
+
+
+def _under_root(root: Path, path: Path) -> Path:
+    """Join ``path`` onto ``root`` and refuse to climb above ``root``."""
+    base_parts = list(root.parts)
+    stack = list(base_parts)
+    for part in path.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if len(stack) <= len(base_parts):
+                raise HandoffError("path escapes the root")
+            stack.pop()
+            continue
+        stack.append(part)
+    if len(stack) < len(base_parts):
+        raise HandoffError("path escapes the root")
+    return Path(*stack)
 
 
 def _quote(text: str, limit: int = 80) -> str:
@@ -1610,7 +1735,9 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             f"Size cap default: {_grouped(DEFAULT_MAX_BYTES)} bytes "
             f"(ceiling {_grouped(HARD_CAP_BYTES)}).\n"
-            "Cited paths resolve against --root, or the working directory."
+            "A relative handoff path resolves against --root, then the\n"
+            "working directory. Cited paths use that same directory.\n"
+            "The error names the absolute path that was checked."
         ),
     )
     parser.add_argument("--version", action="version", version=f"handoff-checker {VERSION}")
@@ -1621,7 +1748,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.add_argument(
         "--root",
         default=None,
-        help="directory cited paths are resolved against (default: working directory)",
+        help="directory a relative handoff path and cited paths resolve against (default: working directory)",
     )
     check_cmd.add_argument(
         "--schema",
@@ -1656,7 +1783,11 @@ def build_parser() -> argparse.ArgumentParser:
         "serve",
         help="MCP server on stdio (one JSON-RPC message per line)",
     )
-    serve_cmd.add_argument("--root", default=None, help="default root for tool calls")
+    serve_cmd.add_argument(
+        "--root",
+        default=None,
+        help="directory a relative path resolves against (default: working directory)",
+    )
     serve_cmd.add_argument("--schema", default=None, help="default schema file for tool calls")
     serve_cmd.add_argument("--max-bytes", type=int, default=None, help="default size cap")
     return parser
@@ -1700,7 +1831,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             return serve(
                 _Defaults(
-                    root=args.root,
+                    root=str(cli_root(args.root)),
                     schema=args.schema,
                     max_bytes=None if args.max_bytes is None else _as_max_bytes(args.max_bytes),
                 )
@@ -1731,15 +1862,21 @@ def main(argv: list[str] | None = None) -> int:
 # --- MCP (stdio, newline-delimited JSON-RPC) --------------------------------
 
 _MCP_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
+_MCP_NEWEST = _MCP_PROTOCOLS[-1]
+_TOOL_NAMES = {"handoff_check", "handoff_template", "handoff_explain"}
 _MCP_INSTRUCTIONS = (
     "Handoff checker. Call handoff_template for a blank payload, then "
     "handoff_check before one agent sends work to another. status ready "
     "means send it. needs-fixes means repair every problem and check again. "
     "blocked means do not send it: the budget is exhausted or the payload "
-    "is over the size cap. Built-in required fields: goal, "
-    "acceptance_criteria, owner, constraints, budget_left. A schema_path "
-    "JSON file can require more fields. It cannot remove the built-in ones. "
-    "Cited local paths are checked against root. handoff_explain lists the rules."
+    "is over the size cap. A negative budget_left is exhausted, same as zero. "
+    "Built-in required fields: goal, acceptance_criteria, owner, constraints, "
+    "budget_left. A schema_path JSON file can require more fields. It cannot "
+    "remove the built-in ones. A relative path resolves against the call's "
+    "root, then the server --root, not the process cwd. Cited local paths use "
+    "that same directory. handoff_explain lists the rules. If a client asks "
+    "for a protocol version this server does not speak, the answer is "
+    "2025-06-18."
 )
 
 
@@ -1762,11 +1899,17 @@ def _tool_defs() -> list[dict[str, Any]]:
                     },
                     "path": {
                         "type": "string",
-                        "description": "Read the handoff from this file. Omit when handoff is set.",
+                        "description": (
+                            "Read the handoff from this file. A relative path resolves "
+                            "against root, not the process cwd. Omit when handoff is set."
+                        ),
                     },
                     "root": {
                         "type": "string",
-                        "description": "Directory cited paths resolve against.",
+                        "description": (
+                            "Directory a relative path and cited files resolve against. "
+                            "Relative to the server --root."
+                        ),
                     },
                     "schema_path": {
                         "type": "string",
@@ -1847,7 +1990,7 @@ def _dispatch_tool(name: str, args: dict[str, Any], defaults: _Defaults) -> dict
         _reject_unknown(args, set())
         return _tool_result(explain_rules())
     if name != "handoff_check":
-        return _tool_error(f"unknown tool {name!r}")
+        raise HandoffError(f"unknown tool {name!r}")
     _reject_unknown(
         args,
         {"handoff", "path", "root", "schema_path", "schema", "max_bytes"},
@@ -1866,9 +2009,10 @@ def _dispatch_tool(name: str, args: dict[str, Any], defaults: _Defaults) -> dict
         "schema_path"
     ) not in (None, ""):
         raise HandoffError("pass schema or schema_path, not both")
-    root = args.get("root", defaults.root)
-    if root is not None and not isinstance(root, str):
-        raise HandoffError("root must be a string")
+    if args.get("root") not in (None, ""):
+        root = _effective_root(args.get("root"), defaults)
+    else:
+        root = _clean_root(_server_root(defaults))
     schema: str | Path | dict[str, Any] | None
     if isinstance(args.get("schema"), dict):
         schema = args["schema"]
@@ -1885,8 +2029,35 @@ def _dispatch_tool(name: str, args: dict[str, Any], defaults: _Defaults) -> dict
         schema=schema,
         max_bytes=DEFAULT_MAX_BYTES if max_bytes is None else max_bytes,
     )
-    source: str | Path = args["path"] if has_path else args["handoff"]
+    if has_path:
+        # A model-supplied relative path may not climb out of root.
+        source: str | Path = _place(root, args["path"].strip(), escape=False)
+    else:
+        source = args["handoff"]
     return _tool_result(checker.check(source))
+
+
+def _server_root(defaults: _Defaults) -> Path:
+    if defaults.root is None or str(defaults.root).strip() == "":
+        return Path.cwd()
+    return Path(os.path.abspath(str(defaults.root)))
+
+
+def _effective_root(raw: Any, defaults: _Defaults) -> Path:
+    server = _server_root(defaults)
+    if raw in (None, ""):
+        return _clean_root(server)
+    if not isinstance(raw, str):
+        raise HandoffError("root must be a string")
+    return _clean_root(_place(server, raw.strip(), escape=False))
+
+
+def _protocol(requested: Any) -> str:
+    # A version we speak is echoed. Anything else, including a newer one,
+    # gets the newest version this server speaks.
+    if isinstance(requested, str) and requested in _MCP_PROTOCOLS:
+        return requested
+    return _MCP_NEWEST
 
 
 def handle_message(message: Any, defaults: _Defaults | None = None) -> dict[str, Any] | None:
@@ -1929,11 +2100,9 @@ def handle_message(message: Any, defaults: _Defaults | None = None) -> dict[str,
         return _rpc_error(req_id if has_id else None, -32602, "invalid params")
 
     if method == "initialize":
-        requested = params.get("protocolVersion", "2024-11-05")
-        protocol = requested if requested in _MCP_PROTOCOLS else "2024-11-05"
         return result(
             {
-                "protocolVersion": protocol,
+                "protocolVersion": _protocol(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "handoff-checker", "version": VERSION},
                 "instructions": _MCP_INSTRUCTIONS,
@@ -1941,9 +2110,19 @@ def handle_message(message: Any, defaults: _Defaults | None = None) -> dict[str,
         )
     if method == "tools/call":
         tool_name = params.get("name")
-        arguments = params.get("arguments") or {}
-        if not isinstance(tool_name, str):
-            return result(_tool_error("tools/call requires a tool name"))
+        if not isinstance(tool_name, str) or not tool_name:
+            if not has_id:
+                return None
+            return _rpc_error(req_id, -32602, "tools/call requires a tool name")
+        if tool_name not in _TOOL_NAMES:
+            if not has_id:
+                return None
+            return _rpc_error(req_id, -32602, f"unknown tool {tool_name!r}")
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return result(_tool_error("arguments must be an object"))
         try:
             body = _dispatch_tool(tool_name, arguments, defaults)
         except HandoffError as exc:
