@@ -304,6 +304,39 @@ def handle_list_tools() -> dict[str, Any]:
     return tools
 
 
+def _handoff_document(payload: Any) -> str:
+    """Return payload text for ``HandoffChecker.check``.
+
+    ``check()`` accepts ``str | Path``. A string with no newline that does
+    not start with ``{`` or ``---`` is opened as a file. This tool's payload
+    is always document text, so a path-like string is forced into the
+    document parser instead of the filesystem.
+    """
+    if not isinstance(payload, str):
+        raise handoff_checker.HandoffError("payload must be a string")
+    leading = payload.lstrip("\ufeff").lstrip()
+    if (
+        not leading
+        or "\n" in payload
+        or leading.startswith("{")
+        or leading.startswith("---")
+    ):
+        return payload
+    return payload + "\n"
+
+
+def _schema_under_root(schema_path: Any, root: Path) -> Path | None:
+    """Resolve a relative schema path against ``--root``, not the process cwd."""
+    if schema_path is None or schema_path == "":
+        return None
+    if not isinstance(schema_path, str):
+        raise handoff_checker.HandoffError("schema_path must be a string")
+    path = Path(schema_path)
+    if path.is_absolute():
+        return path
+    return root / path
+
+
 def call_tool(
     name: str, arguments: dict[str, Any], root: Path, budget_ledger: Path, work_ledger: Path
 ) -> Any:
@@ -330,27 +363,30 @@ def call_tool(
             )
         elif name == "budget-guard-record":
             bg = budget_guard.BudgetGuard(budget_ledger)
+            # Same defaults as budget-guard-check. A missing number is 0;
+            # passing None makes record() reject an optional argument.
             return bg.record(
                 arguments["task"],
-                tokens=arguments.get("tokens"),
-                cost_usd=arguments.get("cost_usd"),
-                tool_calls=arguments.get("tool_calls"),
+                tokens=arguments.get("tokens", 0),
+                cost_usd=arguments.get("cost_usd", 0.0),
+                tool_calls=arguments.get("tool_calls", 0),
                 note=arguments.get("note"),
             )
         elif name == "budget-guard-status":
             bg = budget_guard.BudgetGuard(budget_ledger)
             return bg.status(arguments["task"])
 
-        # Handoff checker tools
+        # Handoff checker tools. check and template are methods on
+        # HandoffChecker, not functions on the module.
         elif name == "handoff-check":
-            payload = arguments["payload"]
-            schema_path = arguments.get("schema_path")
-            schema = None
-            if schema_path:
-                schema = json.loads(Path(schema_path).read_text())
-            return handoff_checker.check(payload, schema=schema)
+            document = _handoff_document(arguments["payload"])
+            checker = handoff_checker.HandoffChecker(
+                root=root,
+                schema=_schema_under_root(arguments.get("schema_path"), root),
+            )
+            return checker.check(document)
         elif name == "handoff-template":
-            return handoff_checker.template()
+            return handoff_checker.HandoffChecker().template()
 
         # Work claim tools
         elif name == "work-claim-take":
