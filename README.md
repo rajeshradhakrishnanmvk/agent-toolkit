@@ -374,6 +374,42 @@ Finished items are kept (up to 100) so a later take does not redo them by accide
 
 The CLI, the library, and the MCP server do not make network calls.
 
+## Codespaces
+
+On GitHub, choose **Code**, then **Codespaces**, then **Create codespace on main**. `.devcontainer/devcontainer.json` uses the Microsoft Python 3.12 image. After create it runs the unit tests. No ports are forwarded.
+
+The three tools stay offline. `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are for Toolkit Tester or another dogfood harness. When they are set, call that endpoint instead of DeepSeek or another cloud API.
+
+| Variable | Codespaces |
+| --- | --- |
+| `OPENAI_BASE_URL` | Default in the devcontainer: `https://chat.srv1536099.hstgr.cloud/v1`. A secret of the same name overrides it after you open a new terminal. |
+| `OPENAI_API_KEY` | Secret. Bearer token. Set this to call the model. |
+| `LLAMA_API_KEY` | Optional secret. The same token under the other name. A new terminal copies it into `OPENAI_API_KEY` when that one is empty. |
+| `OPENAI_MODEL` | Optional secret. Default `Llama-3.2-3B-Instruct`. |
+
+Carrie White is the chat on VPS `srv1536099.hstgr.cloud`, Docker project `timeline-chat`: llama.cpp serving Llama-3.2-3B-Instruct, and the Carrie proxy under `/api`. The public host allows about 10 requests a minute. Stop after the two curls below.
+
+Create secrets under GitHub **Settings → Codespaces → Codespaces secrets**, and allow this repository. Keys stay in that store. `.env` is gitignored. `.env.example` is the same list for a local shell. This repo does not load `.env` for you. Source the helper, or export the variables yourself:
+
+```bash
+. .devcontainer/openai-env.sh
+```
+
+`/health` answers without a key and does not name the model. `/v1/models` returns 401 until the bearer token is sent. Use the `id` from that list. If it is not `Llama-3.2-3B-Instruct`, put the advertised id in `OPENAI_MODEL`.
+
+```bash
+KEY="${OPENAI_API_KEY:-$LLAMA_API_KEY}"
+curl -sS "$OPENAI_BASE_URL/models" \
+  -H "Authorization: Bearer $KEY"
+```
+
+```bash
+curl -sS "$OPENAI_BASE_URL/chat/completions" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"${OPENAI_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word pong.\"}],\"max_tokens\":16}"
+```
+
 ## Tests
 
 ```bash

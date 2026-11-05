@@ -1,0 +1,28 @@
+{
+  "name": "agent-toolkit",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "remoteUser": "vscode",
+  "postCreateCommand": "bash .devcontainer/install-openai-env.sh && python3 -m unittest discover -s tests -v",
+  "postStartCommand": "bash .devcontainer/install-openai-env.sh",
+  "containerEnv": {
+    "OPENAI_BASE_URL": "https://chat.srv1536099.hstgr.cloud/v1",
+    "OPENAI_BASE_URL_SECRET": "${localEnv:OPENAI_BASE_URL}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "LLAMA_API_KEY": "${localEnv:LLAMA_API_KEY}",
+    "OPENAI_MODEL": "${localEnv:OPENAI_MODEL:Llama-3.2-3B-Instruct}"
+  },
+  "remoteEnv": {
+    "OPENAI_BASE_URL": "https://chat.srv1536099.hstgr.cloud/v1",
+    "OPENAI_BASE_URL_SECRET": "${localEnv:OPENAI_BASE_URL}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "LLAMA_API_KEY": "${localEnv:LLAMA_API_KEY}",
+    "OPENAI_MODEL": "${localEnv:OPENAI_MODEL:Llama-3.2-3B-Instruct}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}
