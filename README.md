@@ -374,6 +374,72 @@ Finished items are kept (up to 100) so a later take does not redo them by accide
 
 The CLI, the library, and the MCP server do not make network calls.
 
+## Unified MCP server
+
+Instead of running three separate MCP servers, you can use `mcp_server.py` to expose all tools from budget guard, handoff checker, and work-claim ledger in a single server.
+
+```bash
+python3 mcp_server.py
+```
+
+The unified server accepts the same arguments as the individual tools:
+
+```bash
+python3 mcp_server.py \
+  --root /absolute/path/to/project \
+  --budget-ledger /absolute/path/to/budget-ledger.json \
+  --work-ledger /absolute/path/to/work-claims.json
+```
+
+Defaults:
+- `--root`: Current working directory
+- `--budget-ledger`: `.agent-toolkit/budget-ledger.json` (relative to `--root`)
+- `--work-ledger`: `.agent-toolkit/work-claims.json` (relative to `--root`)
+
+### Configure in Claude Desktop or Cursor
+
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows: `%APPDATA%/Claude/claude_desktop_config.json`; Linux: `~/.config/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "agent-toolkit": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/agent-toolkit/mcp_server.py",
+        "--root",
+        "/absolute/path/to/your/project",
+        "--budget-ledger",
+        "/absolute/path/to/your/project/.agent-toolkit/budget-ledger.json",
+        "--work-ledger",
+        "/absolute/path/to/your/project/.agent-toolkit/work-claims.json"
+      ]
+    }
+  }
+}
+```
+
+### Available tools (11 total)
+
+**Budget Guard** (4 tools):
+- `budget-guard-open`: Open a new budget task with limits
+- `budget-guard-check`: Check if a step would exceed limits
+- `budget-guard-record`: Record actual spend from a completed step
+- `budget-guard-status`: Get the current status of a budget task
+
+**Handoff Checker** (2 tools):
+- `handoff-check`: Validate a handoff payload
+- `handoff-template`: Get a template for a valid handoff
+
+**Work Claim** (5 tools):
+- `work-claim-take`: Claim an item for an owner
+- `work-claim-renew`: Renew a lease on a claimed item
+- `work-claim-release`: Release a claimed item
+- `work-claim-done`: Mark an item as completed
+- `work-claim-list`: List work claims with optional filtering
+
+Stdio transport, one JSON-RPC message per line. Protocol version: `2024-11-05`.
+
 ## Codespaces
 
 On GitHub, choose **Code**, then **Codespaces**, then **Create codespace on main**. `.devcontainer/devcontainer.json` uses the Microsoft Python 3.12 image. After create it runs the unit tests. No ports are forwarded.

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agent-toolkit": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/agent-toolkit/mcp_server.py",
+        "--root",
+        "/absolute/path/to/your/project",
+        "--budget-ledger",
+        "/absolute/path/to/your/project/.agent-toolkit/budget-ledger.json",
+        "--work-ledger",
+        "/absolute/path/to/your/project/.agent-toolkit/work-claims.json"
+      ]
+    }
+  }
+}
