@@ -159,6 +159,7 @@ class FinancialConsultantBots:
         self.temperature = temperature
         self.system_prompt = system_prompt
         self.turn_number = 0
+        self.last_trace: dict[str, Any] | None = None
 
         self.root.mkdir(parents=True, exist_ok=True)
         self.budget = BudgetGuard(self.root / "budget-ledger.json")
@@ -179,15 +180,17 @@ class FinancialConsultantBots:
             # Existing task is acceptable for iterative chat sessions.
             self.budget.status(self.task_id)
 
-    def _claim_stage(self, stage_item: str, owner: str, note: str) -> None:
+    def _claim_stage(self, stage_item: str, owner: str, note: str) -> dict[str, Any]:
         result = self.claims.take(stage_item, owner, ttl_seconds=900, note=note, reopen=True)
         if not result.get("ok"):
             raise RuntimeError(f"Cannot claim stage {stage_item}: {result.get('result')}")
+        return result
 
-    def _done_stage(self, stage_item: str, owner: str, note: str) -> None:
+    def _done_stage(self, stage_item: str, owner: str, note: str) -> dict[str, Any]:
         result = self.claims.done(stage_item, owner, note=note)
         if not result.get("ok"):
             raise RuntimeError(f"Cannot close stage {stage_item}: {result.get('result')}")
+        return result
 
     def _validate_handoff(self, payload: dict[str, Any]) -> None:
         checked = self.handoff.check(payload)
@@ -211,11 +214,24 @@ class FinancialConsultantBots:
     def reply(self, user_text: str) -> tuple[str, dict[str, Any]]:
         self.turn_number += 1
         turn_id = f"turn-{self.turn_number:04d}-{_safe_slug(user_text)[:24]}"
+        trace: dict[str, Any] = {
+            "turn_id": turn_id,
+            "user_text": user_text,
+            "handoffs": [],
+            "claims": [],
+        }
+        self.last_trace = trace
 
         projected_tokens = estimate_tokens(user_text) + 220
         gate = self.budget.check(self.task_id, tokens=projected_tokens, tool_calls=1)
+        trace["gate"] = {
+            "decision": gate.get("decision"),
+            "reason": gate.get("reason", ""),
+            "projected_tokens": projected_tokens,
+        }
         if gate["decision"] == "stop-and-ask-human":
             reason = gate.get("reason", "budget exceeded")
+            trace["outcome"] = "blocked-by-budget"
             return (
                 f"I need human approval before continuing: {reason}",
                 {
@@ -231,56 +247,96 @@ class FinancialConsultantBots:
         advisor_item = f"{turn_id}:advisor"
 
         try:
-            self._claim_stage(intake_item, "intake-bot", "Gather financial context")
+            claimed = self._claim_stage(intake_item, "intake-bot", "Gather financial context")
+            trace["claims"].append(
+                {
+                    "action": "take",
+                    "item": intake_item,
+                    "owner": "intake-bot",
+                    "result": claimed.get("result"),
+                }
+            )
             intake_summary = (
                 "Clarify goals, timeline, cash flow, debt obligations, and risk tolerance. "
                 f"Current prompt: {user_text}"
             )
-            self._validate_handoff(
+            intake_handoff = {
+                "goal": "Pass user financial context to analysis bot.",
+                "acceptance_criteria": [
+                    "Includes user objective and constraints.",
+                    "Mentions risk and timeline assumptions.",
+                ],
+                "owner": "analysis-bot",
+                "constraints": [
+                    "Do not promise returns.",
+                    "Keep recommendations educational, not legal/tax advice.",
+                ],
+                "budget_left": "positive",
+                "artifacts": [],
+                "questions": _resolved_questions_from_prose(intake_summary),
+                "notes": intake_summary,
+            }
+            trace["handoffs"].append({"stage": "intake->analysis", "payload": intake_handoff})
+            self._validate_handoff(intake_handoff)
+            done = self._done_stage(intake_item, "intake-bot", "intake complete")
+            trace["claims"].append(
                 {
-                    "goal": "Pass user financial context to analysis bot.",
-                    "acceptance_criteria": [
-                        "Includes user objective and constraints.",
-                        "Mentions risk and timeline assumptions.",
-                    ],
-                    "owner": "analysis-bot",
-                    "constraints": [
-                        "Do not promise returns.",
-                        "Keep recommendations educational, not legal/tax advice.",
-                    ],
-                    "budget_left": "positive",
-                    "artifacts": [],
-                    "questions": _resolved_questions_from_prose(intake_summary),
-                    "notes": intake_summary,
+                    "action": "done",
+                    "item": intake_item,
+                    "owner": "intake-bot",
+                    "result": done.get("result"),
                 }
             )
-            self._done_stage(intake_item, "intake-bot", "intake complete")
             self.budget.record(self.task_id, tokens=estimate_tokens(intake_summary), tool_calls=1)
 
-            self._claim_stage(analysis_item, "analysis-bot", "Build practical action brief")
-            analysis_summary = self._make_analysis(intake_summary, user_text)
-            self._validate_handoff(
+            claimed = self._claim_stage(analysis_item, "analysis-bot", "Build practical action brief")
+            trace["claims"].append(
                 {
-                    "goal": "Pass analysis brief to advisor bot for final response.",
-                    "acceptance_criteria": [
-                        "Includes assumptions and risk framing.",
-                        "Includes practical next steps.",
-                    ],
-                    "owner": "advisor-bot",
-                    "constraints": [
-                        "Keep language clear and concise.",
-                        "Avoid unsafe guarantees.",
-                    ],
-                    "budget_left": "positive",
-                    "artifacts": [],
-                    "questions": _resolved_questions_from_prose(analysis_summary),
-                    "notes": analysis_summary,
+                    "action": "take",
+                    "item": analysis_item,
+                    "owner": "analysis-bot",
+                    "result": claimed.get("result"),
                 }
             )
-            self._done_stage(analysis_item, "analysis-bot", "analysis complete")
+            analysis_summary = self._make_analysis(intake_summary, user_text)
+            analysis_handoff = {
+                "goal": "Pass analysis brief to advisor bot for final response.",
+                "acceptance_criteria": [
+                    "Includes assumptions and risk framing.",
+                    "Includes practical next steps.",
+                ],
+                "owner": "advisor-bot",
+                "constraints": [
+                    "Keep language clear and concise.",
+                    "Avoid unsafe guarantees.",
+                ],
+                "budget_left": "positive",
+                "artifacts": [],
+                "questions": _resolved_questions_from_prose(analysis_summary),
+                "notes": analysis_summary,
+            }
+            trace["handoffs"].append({"stage": "analysis->advisor", "payload": analysis_handoff})
+            self._validate_handoff(analysis_handoff)
+            done = self._done_stage(analysis_item, "analysis-bot", "analysis complete")
+            trace["claims"].append(
+                {
+                    "action": "done",
+                    "item": analysis_item,
+                    "owner": "analysis-bot",
+                    "result": done.get("result"),
+                }
+            )
             self.budget.record(self.task_id, tokens=estimate_tokens(analysis_summary), tool_calls=1)
 
-            self._claim_stage(advisor_item, "advisor-bot", "Generate final user answer")
+            claimed = self._claim_stage(advisor_item, "advisor-bot", "Generate final user answer")
+            trace["claims"].append(
+                {
+                    "action": "take",
+                    "item": advisor_item,
+                    "owner": "advisor-bot",
+                    "result": claimed.get("result"),
+                }
+            )
             advisor_messages = [
                 {
                     "role": "system",
@@ -309,19 +365,72 @@ class FinancialConsultantBots:
                 max_tokens=self.max_tokens_reply,
                 temperature=self.temperature,
             )
-            self._done_stage(advisor_item, "advisor-bot", "advisor complete")
+            done = self._done_stage(advisor_item, "advisor-bot", "advisor complete")
+            trace["claims"].append(
+                {
+                    "action": "done",
+                    "item": advisor_item,
+                    "owner": "advisor-bot",
+                    "result": done.get("result"),
+                }
+            )
             self.budget.record(self.task_id, tokens=estimate_tokens(final), tool_calls=1)
             status = self.budget.status(self.task_id)
+            trace["outcome"] = "ok"
+            trace["budget"] = {
+                "decision": status.get("decision"),
+                "spent": status.get("spent"),
+                "limits": status.get("limits"),
+            }
             return final, status
         except (BudgetError, WorkClaimError, RuntimeError) as exc:
+            trace["outcome"] = "workflow-error"
+            trace["error"] = str(exc)
             return f"workflow-error: {exc}", self.budget.status(self.task_id)
+
+
+def _format_trace(trace: dict[str, Any] | None) -> str:
+    if not trace:
+        return "trace> no completed turns yet"
+    lines = [
+        f"trace> turn={trace.get('turn_id', '-')}",
+        f"trace> outcome={trace.get('outcome', '-')}",
+    ]
+    if trace.get("error"):
+        lines.append(f"trace> error={trace['error']}")
+
+    handoffs = trace.get("handoffs", [])
+    if handoffs:
+        lines.append("trace> handoffs")
+        for idx, handoff in enumerate(handoffs, start=1):
+            stage = handoff.get("stage", f"stage-{idx}")
+            payload = handoff.get("payload", {})
+            lines.append(f"  {idx}. {stage}")
+            lines.append(json.dumps(payload, indent=2, ensure_ascii=True))
+    else:
+        lines.append("trace> handoffs: none")
+
+    claims = trace.get("claims", [])
+    if claims:
+        lines.append("trace> claim lifecycle")
+        for idx, claim in enumerate(claims, start=1):
+            lines.append(
+                "  "
+                f"{idx}. {claim.get('action', '-')} "
+                f"item={claim.get('item', '-')} "
+                f"owner={claim.get('owner', '-')} "
+                f"result={claim.get('result', '-')}"
+            )
+    else:
+        lines.append("trace> claim lifecycle: none")
+    return "\n".join(lines)
 
 
 def _print_startup(base_url: str, model: str) -> None:
     print("Financial Consultant Bots")
     print(f"endpoint: {base_url}")
     print(f"model:    {model}")
-    print("commands: /help, /model, /status, /quit")
+    print("commands: /help, /model, /status, /trace, /quit")
     print()
 
 
@@ -333,6 +442,8 @@ def _handle_command(command: str, model: str) -> tuple[str, bool]:
         print("/help   show commands")
         print("/model  show active model")
         print("/status show budget status")
+        print("/trace  show latest handoff + claim lifecycle")
+        print("/trace on|off  toggle auto trace after each answer")
         print("/quit   exit")
         return model, False
     if cmd == "/model":
@@ -392,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     _print_startup(base_url, model)
+    auto_trace = False
 
     while True:
         try:
@@ -407,6 +519,18 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         if user_text.startswith("/"):
+            trace_cmd = user_text.strip().lower()
+            if trace_cmd.startswith("/trace"):
+                parts = trace_cmd.split()
+                if len(parts) == 1:
+                    print(_format_trace(assistant.last_trace))
+                elif len(parts) == 2 and parts[1] in {"on", "off"}:
+                    auto_trace = parts[1] == "on"
+                    print(f"trace> auto trace {'enabled' if auto_trace else 'disabled'}")
+                    print(_format_trace(assistant.last_trace))
+                else:
+                    print("trace> usage: /trace or /trace on|off")
+                continue
             if user_text.strip().lower() == "/status":
                 status = assistant.budget.status(assistant.task_id)
                 print(
@@ -432,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
             f"cost ${status['spent']['cost_usd']:.4f}/{status['limits']['max_cost_usd']:.4f} | "
             f"tools {status['spent']['tool_calls']}/{status['limits']['max_tool_calls']}"
         )
+        if auto_trace:
+            print(_format_trace(assistant.last_trace))
 
 
 if __name__ == "__main__":

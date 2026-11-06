@@ -154,6 +154,38 @@ class ChatAppTest(unittest.TestCase):
 
             self.assertNotIn("workflow-error", reply)
 
+    def test_trace_contains_handoffs_and_claim_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".agent-toolkit"
+            bot = chat_app.FinancialConsultantBots(
+                base_url="https://example.com/v1",
+                model="model",
+                api_key="token",
+                root=root,
+                task_id="financial-chat-trace",
+                max_tokens_budget=6000,
+                max_cost_budget=0.05,
+                max_tool_calls_budget=60,
+                max_tokens_reply=120,
+                temperature=0.2,
+                system_prompt="You are helpful.",
+            )
+
+            with mock.patch("chat_app.create_chat_completion", return_value="Build emergency fund first."):
+                bot.reply("I have 20000 monthly surplus. How should I split saving and investing?")
+
+            self.assertIsNotNone(bot.last_trace)
+            assert bot.last_trace is not None
+            self.assertEqual(bot.last_trace.get("outcome"), "ok")
+            self.assertEqual(len(bot.last_trace.get("handoffs", [])), 2)
+            self.assertEqual(len(bot.last_trace.get("claims", [])), 6)
+
+            rendered = chat_app._format_trace(bot.last_trace)
+            self.assertIn("trace> handoffs", rendered)
+            self.assertIn("intake->analysis", rendered)
+            self.assertIn("analysis->advisor", rendered)
+            self.assertIn("trace> claim lifecycle", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
