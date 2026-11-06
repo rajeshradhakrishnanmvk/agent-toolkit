@@ -476,6 +476,25 @@ curl -sS "$OPENAI_BASE_URL/chat/completions" \
   -d "{\"model\":\"${OPENAI_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word pong.\"}],\"max_tokens\":16}"
 ```
 
+Run the interactive chat client in this repo:
+
+```bash
+. .devcontainer/openai-env.sh
+python3 chat_app.py
+```
+
+Optional flags:
+
+```bash
+python3 chat_app.py --model "$OPENAI_MODEL" --max-tokens 256 --temperature 0.2
+```
+
+Chat commands:
+- `/help` show commands
+- `/reset` clear conversation history
+- `/model` show active model
+- `/quit` or `/exit` leave the app
+
 ## Tests
 
 ```bash
