@@ -9,7 +9,7 @@ Built in public by Rajesh (Kochi). Each tool is announced on LinkedIn with a sho
 | 1 | [Budget guard](#week-1--budget-guard) | Live |
 | 2 | [Handoff checker](#week-2--handoff-checker) | Live |
 | 3 | [Work-claim ledger](#week-3--work-claim-ledger) | Live |
-| 4 | Next week | Coming soon |
+| 4 | [Approval ledger](#week-4--approval-ledger) | Live |
 
 The page is static HTML in `/docs`. GitHub Pages: branch `main`, folder `/docs`.
 
@@ -21,7 +21,7 @@ Agents (crews, coding agents, MCP-tool bots) burn tokens, dollars, and tool call
 
 It is one file, standard library only. Use it as a Python module, a CLI, or a local MCP server.
 
-The guard reports a decision. It does not kill your process. When the decision is `stop-and-ask-human`, your harness should refuse the next step and show `ask_human` to the person.
+The guard reports a decision. It does not kill your process. When the decision is `stop-and-ask-human`, your harness should refuse the next step and show `ask_human` to the person. Week 4 can store that question and the later answer. Storing an approval does not raise this budget or run the next step.
 
 ### Decisions
 
@@ -374,6 +374,111 @@ Finished items are kept (up to 100) so a later take does not redo them by accide
 
 The CLI, the library, and the MCP server do not make network calls.
 
+## Week 4 — Approval ledger
+
+A budget check can say `stop-and-ask-human` and return an `ask_human` string. `ask_human.py` stores that question, the action it covers, and the later answer. `ask` files one pending request and returns a request id. `answer` records `approved` or `denied` for that id only. `status` reads the open request, or one id. `list` shows what was stored.
+
+It is one file, standard library only. Use it as a Python module, a CLI, or its own local MCP server. It is not part of `mcp_server.py`.
+
+This is a local record. It is not proof of who answered, and it is not a security boundary. Any caller that can write the ledger, or call `answer`, can store `approved`. Restrict the answer path to the human. An approval does not raise a budget, start a tool, or resume work. The harness decides whether that specific request is enough to continue.
+
+A second `ask` for a task that already has a pending request returns `pending-exists` and writes nothing. The request id, task, question, and action are fixed when the request is filed. An answer must repeat that question and action. A decided request is not overwritten. After it is decided, a new `ask` gets a new id. An answer for the old id does not approve the new one.
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | A question is waiting. Nothing has been approved. |
+| `approved` | That request id was recorded as approved. |
+| `denied` | That request id was recorded as denied. |
+| `none` | This task has no stored request. |
+
+### 30-second quickstart
+
+```bash
+python3 ask_human.py ask fix-flaky-test \
+  --question "Ask a human before the next costly step." \
+  --action "spend the next step on fix-flaky-test"
+
+python3 ask_human.py status fix-flaky-test
+
+python3 ask_human.py answer fix-flaky-test \
+  --request-id REQUEST_ID \
+  --decision approved \
+  --question "Ask a human before the next costly step." \
+  --action "spend the next step on fix-flaky-test"
+
+python3 ask_human.py status fix-flaky-test --request-id REQUEST_ID
+```
+
+`ask` and `answer` exit `0` when `ok` is true, `3` when the call is refused (`pending-exists`, `already-decided`, `mismatch`, `absent`), and `1` on a real error, including a malformed ledger. `status`, `list`, and `explain` exit `0`. Add `--json` for the machine-readable result.
+
+```bash
+python3 demo_ask_human.py
+```
+
+That example opens a 100-token budget, checks a 1000-token step, stores the stop question, reads it back as `pending`, records an answer for that request id, and shows the budget still at 0 tokens. It makes no network call. The example process writes the answer itself, which is the point of the trust limit above.
+
+### As a library
+
+```python
+from ask_human import ApprovalLedger
+
+book = ApprovalLedger(".agent-toolkit/approvals.json")
+filed = book.ask(
+    "fix-flaky-test",
+    "Ask a human before the next costly step.",
+    action="spend the next step on fix-flaky-test",
+)
+if not filed["ok"]:
+    raise SystemExit(filed["result"])
+
+book.answer(
+    "fix-flaky-test",
+    filed["request_id"],
+    "approved",
+    question=filed["question"],
+    action=filed["action"],
+)
+print(book.status("fix-flaky-test", request_id=filed["request_id"])["status"])
+```
+
+`list_requests` is the method name because `list` is a Python builtin. The CLI and MCP tool are `list` / `approval_list`. The path you pass is the file. Relative paths in the CLI and the MCP server resolve against `--root`.
+
+### As an MCP server
+
+```bash
+python3 ask_human.py serve --root /absolute/path/to/agent-toolkit
+```
+
+Stdio transport, one JSON-RPC message per line (the same shape Cursor and Claude Desktop speak). Tools: `approval_ask`, `approval_answer`, `approval_status`, `approval_list`, `approval_explain`.
+
+```json
+{
+  "mcpServers": {
+    "ask-human": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/agent-toolkit/ask_human.py",
+        "serve",
+        "--root",
+        "/absolute/path/to/agent-toolkit"
+      ]
+    }
+  }
+}
+```
+
+Use an absolute `--root`. A relative `ledger` or `root` on a tool call is resolved against that root, not the process working directory. If a client asks for a protocol version this server does not speak, the server answers with `2025-06-18`. A refused answer is a normal tool result with `ok` false. Bad arguments come back with `isError`.
+
+### Ledger
+
+Default path: `.agent-toolkit/approvals.json` under `--root`. `$ASK_HUMAN_LEDGER` overrides it. An absolute path is used as given. A relative one resolves against `--root`. A relative `$ASK_HUMAN_LEDGER` may not climb above that directory.
+
+The file is pretty-printed JSON. A sibling `approvals.json.lock` serializes readers and writers across processes (`flock` on Linux and macOS). Writes go to a temp file in the same directory and replace the ledger, so a crash mid-write keeps the previous requests. An empty or corrupt file is an error and is left in place. A missing file reads as no requests and is created on `ask`.
+
+The CLI, the library, and the MCP server do not make network calls.
+
 ## Unified MCP server
 
 Instead of running three separate MCP servers, you can use `mcp_server.py` to expose all tools from budget guard, handoff checker, and work-claim ledger in a single server.
@@ -444,7 +549,7 @@ Stdio transport, one JSON-RPC message per line. Protocol version: `2024-11-05`.
 
 On GitHub, choose **Code**, then **Codespaces**, then **Create codespace on main**. `.devcontainer/devcontainer.json` uses the Microsoft Python 3.12 image. After create it runs the unit tests. No ports are forwarded.
 
-The three tools stay offline. `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are for Toolkit Tester or another dogfood harness. When they are set, call that endpoint instead of DeepSeek or another cloud API.
+The three tools stay offline. `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are for Toolkit Tester or another live-test harness. When they are set, call that endpoint instead of DeepSeek or another cloud API.
 
 | Variable | Codespaces |
 | --- | --- |
