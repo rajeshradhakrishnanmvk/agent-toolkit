@@ -208,9 +208,9 @@
           <p>When several agents share a repo, two of them will pick up the same task. The ledger lets one agent claim an item for a limited time. The other is told who holds it. When the lease expires, the claim is free to take over.</p>
         </li>
         <li>
-          <div class="week-id"><span>Week 4</span><span class="badge">Coming soon</span></div>
-          <h3>Next week</h3>
-          <p class="soon-note">Not published yet.</p>
+          <div class="week-id"><span>Week 4</span><span class="badge live">Live</span></div>
+          <h3>Approval ledger</h3>
+          <p>When a budget check says to stop and ask a human, the next step needs a record of the question and the answer. The ledger stores one pending request per task, bound to a request id, the question, and the action. A later request gets a new id. An old answer does not approve it. This is a local record, not a check of who answered, and an approval does not raise the budget or run the work.</p>
         </li>
       </ol>
     </section>
@@ -255,11 +255,29 @@ python3 work_claim.py renew fix-flaky-test --owner agent-a
 
 python3 work_claim.py done fix-flaky-test --owner agent-a</code></pre>
       <p>A second agent that takes the same item gets busy while the lease is running. After it expires, that take succeeds. <code>python3 demo_work_claim.py</code> shows the blocked agent, then the takeover. The same operations are a local MCP server: <code>python3 work_claim.py serve</code>.</p>
+    </section>
+
+    <section aria-labelledby="approval">
+      <h2 id="approval">Week 4 quickstart</h2>
+      <p>Python 3.9 or newer. No packages to install. From a clone of the repo:</p>
+      <pre><code>python3 ask_human.py ask fix-flaky-test \
+  --question "Ask a human before the next costly step." \
+  --action "spend the next step on fix-flaky-test"
+
+python3 ask_human.py status fix-flaky-test
+
+python3 ask_human.py answer fix-flaky-test \
+  --request-id REQUEST_ID \
+  --decision approved \
+  --question "Ask a human before the next costly step." \
+  --action "spend the next step on fix-flaky-test"</code></pre>
+      <p><code>status</code> is <code>pending</code> until that request id is answered, then <code>approved</code> or <code>denied</code>. A second ask while one is pending is refused. A decided request is not overwritten. <code>python3 demo_ask_human.py</code> runs a 100-token budget into a stop, stores the question, records the answer, and leaves the budget at 0. The same operations are a local MCP server: <code>python3 ask_human.py serve</code>. Approval does not raise a budget or resume the task. The ledger does not check who wrote the answer.</p>
       <p class="links">
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit">Source on GitHub</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/budget_guard.py">budget_guard.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/handoff_checker.py">handoff_checker.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/work_claim.py">work_claim.py</a>
+        <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/ask_human.py">ask_human.py</a>
         <a href="https://github.com/rajeshradhakrishnanmvk/agent-toolkit/blob/main/README.md">README</a>
       </p>
     </section>
