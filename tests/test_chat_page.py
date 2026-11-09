@@ -1,0 +1,51 @@
+"""The static chat page under docs/chat/."""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DOCS = ROOT / "docs"
+CHAT = DOCS / "chat"
+
+
+class ChatPageTest(unittest.TestCase):
+    def test_page_exists_and_homepage_links_to_it(self) -> None:
+        html = (CHAT / "index.html").read_text(encoding="utf-8")
+        css = (CHAT / "chat.css").read_text(encoding="utf-8")
+        script = (CHAT / "chat.js").read_text(encoding="utf-8")
+        home = (DOCS / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="chat/"', home)
+        self.assertEqual(home.count("<script>"), 1)
+        self.assertEqual(home.count("stats.srv1536099.hstgr.cloud/hit"), 1)
+        self.assertIn('src="chat.js"', html)
+        self.assertIn('href="chat.css"', html)
+        self.assertIn('name="viewport"', html)
+        self.assertIn("https://chat.srv1536099.hstgr.cloud/v1", script)
+        self.assertIn("Llama-3.2-3B-Instruct", script)
+        self.assertIn("I need human approval before continuing:", script)
+        self.assertIn("localStorage", script)
+        self.assertIn("sessionStorage", script)
+        self.assertNotIn("fonts.googleapis", html.lower())
+        self.assertNotIn("fonts.googleapis", css.lower())
+        secret = re.compile(r"sk-[A-Za-z0-9]{12,}")
+        for name, text in (("html", html), ("css", css), ("js", script)):
+            self.assertIsNone(secret.search(text), name)
+            self.assertNotIn("OPENAI_API_KEY=", text, name)
+            self.assertNotIn("Bearer sk-", text, name)
+        self.assertIn("stays in this browser", html)
+        self.assertIn("not a hosted service", html)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("docs/chat/", readme)
+        self.assertIn("https://rajeshradhakrishnanmvk.github.io/agent-toolkit/chat/", readme)
+
+    def test_chat_page_does_not_replace_the_homepage_counter(self) -> None:
+        html = (CHAT / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("stats.srv1536099.hstgr.cloud/hit", html)
+        self.assertEqual(html.lower().count("<script"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -600,6 +600,8 @@ Chat commands:
 - `/model` show active model
 - `/quit` or `/exit` leave the app
 
+The same client is a static page in `docs/chat/`. After this branch is on `main`, GitHub Pages serves it at <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/chat/>. You type the API key in the browser. It stays in that browser's storage and is not in this repository. The page can keep several conversations, and it estimates a budget the way `chat_app.py` does before it calls the model. It does not run the Python ledger files.
+
 ## Tests
 
 ```bash

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat — agent-toolkit</title>
+  <meta name="description" content="Browser chat for the financial consultant client in chat_app.py. The API key stays in this browser.">
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <a class="skip" href="#composer">Skip to message</a>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head">
+        <a class="home" href="../">agent-toolkit</a>
+        <button type="button" id="new-chat">New chat</button>
+      </div>
+      <ul class="conv-list" id="conv-list"></ul>
+      <p class="side-note">Conversations stay in this browser. This page is not a hosted chat service.</p>
+    </aside>
+    <div class="main">
+      <header class="top">
+        <button type="button" class="menu" id="menu" aria-expanded="false" aria-controls="sidebar">Chats</button>
+        <h1 id="title">Chat</h1>
+        <button type="button" id="open-settings">Settings</button>
+      </header>
+      <div class="thread" id="thread" aria-live="polite"></div>
+      <p class="budget" id="budget"></p>
+      <form class="composer" id="composer">
+        <label class="sr" for="message">Message</label>
+        <textarea id="message" rows="2" placeholder="Message. /help lists commands."></textarea>
+        <button type="submit" id="send">Send</button>
+      </form>
+      <p class="key-note">The API key stays in this browser. Any script on this page can read it. It is sent only to the endpoint in Settings.</p>
+    </div>
+  </div>
+
+  <dialog id="settings">
+    <form method="dialog" id="settings-form">
+      <h2>Settings</h2>
+      <p class="warn">This is a client-side demo, not a hosted service. A key in browser storage is visible to you and to any script on this page. Do not use a key you cannot rotate. This page does not run the Python budget, handoff, or claim files. It estimates a budget locally, then makes one model call for the advisor step, the same shape as <code>chat_app.py</code>.</p>
+      <label>Base URL <input id="base-url" name="baseUrl" type="url" autocomplete="off" required></label>
+      <label>Model <input id="model" name="model" type="text" autocomplete="off" required></label>
+      <label>API key <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="Typed here. Never stored in the repository."></label>
+      <label class="check"><input id="remember-key" type="checkbox"> Remember the key in this browser (local storage). Leave this off to keep it for this tab only.</label>
+      <label>Max tokens per reply <input id="max-tokens" type="number" min="1" step="1" required></label>
+      <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" required></label>
+      <label>Budget token cap <input id="budget-tokens" type="number" min="1" step="1" required></label>
+      <label>Budget tool-call cap <input id="budget-tools" type="number" min="1" step="1" required></label>
+      <div class="dialog-actions">
+        <button type="button" id="forget-key">Forget key</button>
+        <button type="submit" value="close">Close</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="chat.js"></script>
+</body>
+</html>
