@@ -1,4 +1,4 @@
 {
-  "souls": ["general.json"],
-  "sessions": ["demo.json"]
+  "souls": ["general.json", "planner.json", "writer.json"],
+  "sessions": ["demo.json", "handoff.json"]
 }

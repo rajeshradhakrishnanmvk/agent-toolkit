@@ -1,4 +1,10 @@
-/* Browser-first agent harness. No imports. Works in a browser and in Node 18+. */
+/* Browser-first agent harness. No third-party imports. Works in a browser and in Node 18+. */
+
+import { checkHandoff, renderTemplate, HandoffError } from "./handoff.js";
+import { ClaimError } from "./claims.js";
+
+export { checkHandoff, renderTemplate, parseHandoff, HandoffError } from "./handoff.js";
+export { createClaims, ClaimError, CLAIM_TTL } from "./claims.js";
 
 export const DEFAULT_BASE_URL = "https://chat.srv1536099.hstgr.cloud/v1";
 export const DEFAULT_MODEL = "Llama-3.2-3B-Instruct";
@@ -237,12 +243,13 @@ export function parseToolCall(text) {
   return { call: null, ignored: 0, malformed: false };
 }
 
-function toolLines(tools) {
+function toolLines(tools, example) {
+  const sample = example || { name: "clock", args: {} };
   const lines = [
     "You may call at most one tool in a reply.",
     "To call a tool, end your reply with one fenced block of this shape:",
     "```tool",
-    "{\"name\":\"clock\",\"args\":{}}",
+    JSON.stringify(sample),
     "```",
     "If you do not need a tool, answer in plain text with no tool block.",
     "Tools:",
@@ -946,6 +953,79 @@ export function createTools() {
         throw new HarnessError("ask_human action must be ask, status, or list", { code: "tool" });
       },
     },
+    {
+      name: "handoff",
+      description: "Check a handoff or return a blank template. ready can be sent. needs-fixes lists what is missing. blocked means stop.",
+      schema: {
+        type: "object",
+        required: ["action"],
+        properties: {
+          action: { type: "string" },
+          handoff: { type: "string" },
+          format: { type: "string" },
+        },
+      },
+      risk: "low",
+      async run(args, ctx) {
+        const action = args && args.action;
+        if (action === "template") {
+          const format = args.format || "markdown";
+          return { format: format, template: renderTemplate(format) };
+        }
+        if (action === "check") {
+          const stored = ctx && ctx.handoffBox ? ctx.handoffBox.value : null;
+          const source = args && args.handoff != null && args.handoff !== "" ? args.handoff : stored;
+          if (source == null || source === "") throw new HandoffError("pass handoff text");
+          return checkHandoff(source, {
+            schema: args.schema,
+            maxBytes: args.max_bytes,
+            files: ctx && ctx.files,
+          });
+        }
+        throw new HandoffError("handoff action must be check or template");
+      },
+    },
+    {
+      name: "work_claim",
+      description: "Claim, release, heartbeat, or list one item. Only one owner holds it. A stale claim can be taken over.",
+      schema: {
+        type: "object",
+        required: ["action", "item"],
+        properties: {
+          action: { type: "string" },
+          item: { type: "string" },
+          owner: { type: "string" },
+          ttl_seconds: { type: "integer" },
+        },
+      },
+      risk: function (args) {
+        return args && args.action === "list" ? "low" : "medium";
+      },
+      async run(args, ctx) {
+        if (!ctx || !ctx.claims) throw new ClaimError("claim ledger is not available");
+        const action = args && args.action;
+        const item = args && args.item;
+        const owner = args && args.owner;
+        const extra = {
+          ttl_seconds: args && args.ttl_seconds,
+          note: args && args.note,
+          reopen: args && args.reopen,
+          state: args && args.state,
+          limit: args && args.limit,
+        };
+        if (action === "claim" || action === "take") return ctx.claims.take(item, owner, extra);
+        if (action === "release") return ctx.claims.release(item, owner);
+        if (action === "heartbeat" || action === "renew") return ctx.claims.heartbeat(item, owner, extra);
+        if (action === "done") return ctx.claims.done(item, owner, extra);
+        if (action === "list") return ctx.claims.list({
+          item: item,
+          state: extra.state,
+          owner: owner,
+          limit: extra.limit,
+        });
+        throw new ClaimError("work_claim action must be claim, release, heartbeat, or list");
+      },
+    },
   ];
 }
 
@@ -1002,6 +1082,9 @@ export async function runAgent(options) {
     budget: opts.budget,
     approvals: opts.approvals,
     fetch: opts.fetchImpl || globalThis.fetch,
+    claims: opts.claims,
+    handoffBox: opts.handoffBox || { value: null },
+    files: opts.files || null,
   };
   const system = composeInstructions(globalProfile, soul, session) + "\n\n" + toolLines(tools);
   const contextTokens = config.contextTokens || CONTEXT_TOKENS;
@@ -1244,4 +1327,377 @@ export async function runAgent(options) {
 function finish(_opts, result) {
   result.traceText = result.trace.toJSONL();
   return result;
+}
+
+export const DEMO_ITEM = "demo-task";
+export const DEMO_MODEL_CAP = 4;
+
+export function validDemoHandoff() {
+  return {
+    goal: "Name the capital of France.",
+    owner: "writer",
+    budget_left: "800 tokens",
+    constraints: ["One sentence."],
+    acceptance_criteria: ["The sentence names Paris."],
+    questions: [],
+    artifacts: [],
+  };
+}
+
+export function blockedDemoHandoff() {
+  return {
+    goal: "Name the capital of France.",
+    owner: "writer",
+    budget_left: "0",
+    constraints: ["One sentence."],
+    acceptance_criteria: ["Make it work."],
+    questions: [],
+    artifacts: [],
+  };
+}
+
+function fenceCall(name, args) {
+  return "```tool\n" + JSON.stringify({ name: name, args: args }) + "\n```";
+}
+
+export function stubDemoProvider(handoff) {
+  const doc = handoff || validDemoHandoff();
+  const steps = [
+    fenceCall("work_claim", { action: "claim", item: DEMO_ITEM, owner: "planner" }),
+    fenceCall("handoff", { action: "check", handoff: doc }),
+    fenceCall("work_claim", { action: "claim", item: DEMO_ITEM, owner: "writer" }),
+    "Paris is the capital of France.\n" + fenceCall("handoff", { action: "check" }),
+  ];
+  let index = 0;
+  return async function () {
+    const content = steps[index] || "Paris is the capital of France.";
+    index += 1;
+    return { content: content };
+  };
+}
+
+function proseOf(text) {
+  return String(text || "").replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function handoffReason(decision) {
+  const lines = [decision && decision.summary ? decision.summary : "The handoff is not ready."];
+  ((decision && decision.problems) || []).forEach(function (item) {
+    if (item && item.message) lines.push(item.message);
+  });
+  return lines.join("\n");
+}
+
+function handoffFromReply(text) {
+  const blocks = fences(text);
+  for (let i = 0; i < blocks.length; i += 1) {
+    const body = (blocks[i].body || "").trim();
+    if (body.charAt(0) !== "{") continue;
+    try {
+      const data = JSON.parse(body);
+      if (data && data.handoff != null) return data.handoff;
+      if (data && data.args && data.args.handoff != null) return data.args.handoff;
+      if (data && data.goal != null) return data;
+    } catch (err) {
+      /* keep looking */
+    }
+  }
+  const trimmed = String(text || "").trim();
+  if (trimmed.charAt(0) === "{") {
+    try {
+      return JSON.parse(trimmed);
+    } catch (err) {
+      return null;
+    }
+  }
+  if (trimmed.indexOf("---") === 0) return trimmed;
+  return null;
+}
+
+export async function runPair(options) {
+  const opts = options || {};
+  if (typeof opts.provider !== "function") throw new HarnessError("the demo needs a provider", { code: "config" });
+  if (!opts.claims) throw new HarnessError("the demo needs a claim ledger", { code: "claim" });
+  const picked = selectSession(
+    { global: opts.global, souls: opts.souls, sessions: opts.sessions },
+    opts.sessionId || "handoff"
+  );
+  const globalProfile = opts.globalProfile || picked.global;
+  const session = opts.session || picked.session;
+  const planner = (opts.souls && opts.souls.planner) || null;
+  const writer = (opts.souls && opts.souls.writer) || null;
+  if (!planner || !writer || !session) {
+    throw new HarnessError("the two-agent demo needs the planner soul, the writer soul, and a session", { code: "profile" });
+  }
+  const config = resolveConfig(globalProfile, planner, session);
+  const allTools = opts.tools || createTools();
+  const duoTools = allTools.filter(function (tool) { return tool.name === "handoff" || tool.name === "work_claim"; });
+  const trace = opts.trace || createTrace();
+  const task = taskId(session.id || "handoff");
+  if (opts.budget) await opts.budget.ensure(task, config.budget || {});
+  const box = { value: null };
+  const claims = opts.claims;
+  const ctx = {
+    now: opts.now || function () { return new Date(); },
+    taskId: task,
+    budget: opts.budget,
+    approvals: opts.approvals,
+    fetch: opts.fetchImpl || globalThis.fetch,
+    claims: claims,
+    handoffBox: box,
+    files: opts.files || null,
+    trace: trace,
+  };
+  const messages = [{ role: "user", content: "What is the capital of France?" }];
+  let modelCalls = 0;
+
+  async function publish(status) {
+    if (opts.onStep) await opts.onStep({ messages: messages.slice(), status: status, modelCalls: modelCalls });
+  }
+
+  async function releaseOwned(owner) {
+    const released = await claims.release(DEMO_ITEM, owner);
+    if (released.result !== "released") return released;
+    await trace.add({
+      kind: "tool",
+      soul: owner,
+      name: "work_claim",
+      action: "release",
+      risk: "medium",
+      ok: true,
+      ms: 0,
+    });
+    messages.push({ role: "user", soul: owner, content: toolMessage("work_claim", released) });
+    return released;
+  }
+
+  function stop(status, text) {
+    return finish(opts, {
+      status: status,
+      text: text,
+      messages: messages,
+      trace: trace,
+      iterations: modelCalls,
+      modelCalls: modelCalls,
+    });
+  }
+
+  const open = await claims.list({ item: DEMO_ITEM });
+  const sitting = open.claims && open.claims[0];
+  if (sitting && sitting.state !== "done" && (sitting.owner === "planner" || sitting.owner === "writer")) {
+    await releaseOwned(sitting.owner);
+  }
+
+  async function ask(soul, userText) {
+    if (modelCalls >= DEMO_MODEL_CAP) return { overflow: true, text: "", parsed: { call: null, malformed: false, ignored: 0 } };
+    const system = composeInstructions(globalProfile, soul, session) + "\n\n" + toolLines(duoTools, {
+      name: "work_claim",
+      args: { action: "claim", item: DEMO_ITEM, owner: soul.id },
+    });
+    const fitted = fitMessages({
+      system: system,
+      messages: [{ role: "user", content: userText }],
+      contextTokens: config.contextTokens || CONTEXT_TOKENS,
+      replyTokens: config.maxReplyTokens || REPLY_TOKENS,
+    });
+    let preflight = { decision: "continue", reason: "continue: within budget" };
+    if (opts.budget) {
+      preflight = await opts.budget.check(task, { tokens: fitted.tokens });
+      await trace.add({
+        kind: "budget",
+        phase: "preflight",
+        soul: soul.id,
+        decision: preflight.decision,
+        reason: preflight.reason,
+        promptTokens: fitted.tokens,
+      });
+      if (preflight.decision === "stop-and-ask-human") return { budget: preflight, text: "", parsed: { call: null } };
+    }
+    modelCalls += 1;
+    const started = Date.now();
+    const completion = await opts.provider({
+      messages: [{ role: "system", content: fitted.system }].concat(fitted.messages),
+      model: config.model || DEFAULT_MODEL,
+      temperature: config.temperature,
+      maxTokens: config.maxReplyTokens || REPLY_TOKENS,
+    });
+    const text = completion && typeof completion.content === "string" ? completion.content : "";
+    const parsed = parseToolCall(text);
+    if (opts.budget) await opts.budget.record(task, { tokens: fitted.tokens + estimateTokens(text), note: "model" });
+    await trace.add({
+      kind: "model",
+      soul: soul.id,
+      iteration: modelCalls,
+      promptTokens: fitted.tokens,
+      promptChars: Array.from(joinPrompt(fitted.system, fitted.messages)).length,
+      replyTokens: estimateTokens(text),
+      ms: Date.now() - started,
+      decision: preflight.decision,
+      dropped: fitted.dropped,
+      tool: parsed.call ? parsed.call.name : "",
+      ignored: parsed.ignored,
+      malformed: parsed.malformed,
+    });
+    messages.push({ role: "assistant", soul: soul.id, content: text });
+    return { text: text, parsed: parsed, fitted: fitted };
+  }
+
+  async function execute(soulId, call) {
+    const tool = findTool(duoTools, call.name);
+    if (!tool) {
+      const payload = { ok: false, error: "unknown tool" };
+      messages.push({ role: "user", soul: soulId, content: toolMessage(call.name || "tool", payload) });
+      return { ok: false, payload: payload };
+    }
+    const risk = riskOf(tool, call.args);
+    if (opts.budget) {
+      const gate = await opts.budget.check(task, { tool_calls: 1 });
+      if (gate.decision === "stop-and-ask-human") return { budget: gate };
+    }
+    const started = Date.now();
+    let payload;
+    let ok = true;
+    try {
+      payload = await tool.run(call.args || {}, ctx);
+    } catch (err) {
+      ok = false;
+      payload = { ok: false, error: err && err.message ? err.message : "tool failed" };
+    }
+    await trace.add({
+      kind: "tool",
+      soul: soulId,
+      name: tool.name,
+      action: (call.args && call.args.action) || "",
+      risk: risk,
+      ok: ok,
+      ms: Date.now() - started,
+    });
+    if (opts.budget) await opts.budget.record(task, { tool_calls: 1, note: tool.name });
+    messages.push({ role: "user", soul: soulId, content: toolMessage(tool.name, payload) });
+    return { ok: ok, payload: payload };
+  }
+
+  function claimCall(parsed, owner) {
+    const call = parsed && parsed.call;
+    if (!call) return null;
+    if (call.name !== "work_claim") return null;
+    const action = call.args && call.args.action;
+    if (action !== "claim" && action !== "take") return null;
+    if (!call.args || call.args.item !== DEMO_ITEM || call.args.owner !== owner) return null;
+    return call;
+  }
+
+  await publish("Planner is claiming the task.");
+  const claimed = await ask(planner, "Claim item " + DEMO_ITEM + " for owner planner. Reply with one work_claim tool.");
+  if (claimed.budget) return stop("budget-stop", claimed.budget.reason);
+  if (claimed.overflow) return stop("stopped", "Stopped: the demo allows 4 model calls.");
+  if (claimed.parsed.malformed) return stop("stopped", "Planner sent a tool block that is not valid JSON.");
+  const plannerClaim = claimCall(claimed.parsed, "planner");
+  if (!plannerClaim) {
+    const got = claimed.parsed.call ? claimed.parsed.call.name : "no tool";
+    return stop("stopped", "Planner did not claim " + DEMO_ITEM + " as planner (" + got + ").");
+  }
+  const plannerHold = await execute("planner", plannerClaim);
+  if (plannerHold.budget) return stop("budget-stop", plannerHold.budget.reason);
+  const holdResult = plannerHold.payload && plannerHold.payload.result;
+  if (!plannerHold.ok || (holdResult !== "taken" && holdResult !== "taken-over" && holdResult !== "held")) {
+    const why = plannerHold.payload && (plannerHold.payload.error || plannerHold.payload.result || "busy");
+    return stop("stopped", "Planner could not claim " + DEMO_ITEM + ": " + why + ".");
+  }
+  await publish("Planner is writing the handoff.");
+
+  const wrote = await ask(
+    planner,
+    "Call handoff with action check. Set handoff to a JSON document: goal Name the capital of France, owner writer, budget_left 800 tokens, constraints one sentence, acceptance criterion The sentence names Paris. Leave questions and artifacts empty. Do not use a question mark."
+  );
+  if (wrote.budget) return stop("budget-stop", wrote.budget.reason);
+  if (wrote.overflow) return stop("stopped", "Stopped: the demo allows 4 model calls.");
+  if (wrote.parsed.malformed) return stop("stopped", "Planner sent a tool block that is not valid JSON.");
+  let document = null;
+  const wroteCall = wrote.parsed.call;
+  if (wroteCall && wroteCall.name !== "handoff") {
+    return stop("stopped", "Planner called " + wroteCall.name + ". This step needs a handoff document.");
+  }
+  if (wroteCall && wroteCall.args && wroteCall.args.handoff != null && wroteCall.args.handoff !== "") {
+    document = wroteCall.args.handoff;
+  } else if (!wroteCall) {
+    document = handoffFromReply(wrote.text);
+  }
+  if (document == null || document === "") {
+    return stop("stopped", "Planner did not write a handoff.");
+  }
+  box.value = document;
+  const checked = await execute("planner", { name: "handoff", args: { action: "check", handoff: document } });
+  if (checked.budget) return stop("budget-stop", checked.budget.reason);
+  if (!checked.ok || !checked.payload || !checked.payload.status) {
+    const why = checked.payload && checked.payload.error ? checked.payload.error : "the checker rejected the text";
+    return stop("stopped", "Planner's handoff could not be checked. " + why);
+  }
+  const released = await releaseOwned("planner");
+  if (released.result !== "released") {
+    return stop("stopped", "Planner could not release " + DEMO_ITEM + ": " + released.result + ".");
+  }
+  await publish("Writer is claiming the task.");
+
+  const writerClaimed = await ask(writer, "Claim item " + DEMO_ITEM + " for owner writer. Reply with one work_claim tool.");
+  if (writerClaimed.budget) return stop("budget-stop", writerClaimed.budget.reason);
+  if (writerClaimed.overflow) return stop("stopped", "Stopped: the demo allows 4 model calls.");
+  if (writerClaimed.parsed.malformed) return stop("stopped", "Writer sent a tool block that is not valid JSON.");
+  const writerClaim = claimCall(writerClaimed.parsed, "writer");
+  if (!writerClaim) {
+    const got = writerClaimed.parsed.call ? writerClaimed.parsed.call.name : "no tool";
+    return stop("stopped", "Writer did not claim " + DEMO_ITEM + " as writer (" + got + ").");
+  }
+  const writerHold = await execute("writer", writerClaim);
+  if (writerHold.budget) return stop("budget-stop", writerHold.budget.reason);
+  const writerResult = writerHold.payload && writerHold.payload.result;
+  if (!writerHold.ok || (writerResult !== "taken" && writerResult !== "taken-over" && writerResult !== "held")) {
+    const why = writerHold.payload && (writerHold.payload.error || writerHold.payload.result || "busy");
+    return stop("stopped", "Writer could not claim " + DEMO_ITEM + ": " + why + ".");
+  }
+  await publish("Writer is checking the handoff.");
+
+  const answered = await ask(
+    writer,
+    "Call handoff with action check. If the handoff is ready, write the one-sentence answer above the tool fence."
+  );
+  if (answered.budget) return stop("budget-stop", answered.budget.reason);
+  if (answered.overflow) return stop("stopped", "Stopped: the demo allows 4 model calls.");
+  if (answered.parsed.malformed) return stop("stopped", "Writer sent a tool block that is not valid JSON.");
+  const answerCall = answered.parsed.call;
+  if (!answerCall || answerCall.name !== "handoff") {
+    const got = answerCall ? answerCall.name : "no tool";
+    await releaseOwned("writer");
+    return stop("stopped", "Writer did not check the handoff (" + got + ").");
+  }
+  const checkArgs = {
+    action: "check",
+    handoff: answerCall.args && answerCall.args.handoff != null && answerCall.args.handoff !== ""
+      ? answerCall.args.handoff
+      : box.value,
+  };
+  const verdict = await execute("writer", { name: "handoff", args: checkArgs });
+  if (verdict.budget) return stop("budget-stop", verdict.budget.reason);
+  if (!verdict.ok || !verdict.payload || !verdict.payload.status) {
+    const why = verdict.payload && verdict.payload.error ? verdict.payload.error : "the checker failed";
+    await releaseOwned("writer");
+    return stop("stopped", "Writer could not check the handoff. " + why);
+  }
+  if (!verdict.payload.ok_to_hand_off) {
+    const reason = handoffReason(verdict.payload);
+    messages.push({ role: "assistant", soul: "writer", content: reason });
+    await releaseOwned("writer");
+    await publish("Stopped.");
+    return stop("blocked", reason);
+  }
+  const prose = proseOf(answered.text);
+  await releaseOwned("writer");
+  if (!prose) {
+    const reason = "The handoff is ready. The writer did not write an answer.";
+    messages.push({ role: "assistant", soul: "writer", content: reason });
+    await publish("Stopped.");
+    return stop("stopped", reason);
+  }
+  await publish("Done.");
+  return stop("done", prose);
 }

@@ -1,0 +1,12 @@
+{
+  "id": "handoff",
+  "kind": "session",
+  "name": "Two agents",
+  "instructions": "Planner and Writer share this task. One tool per reply.",
+  "config": {
+    "soulId": "planner",
+    "autonomy": "full",
+    "goals": "Answer: What is the capital of France?",
+    "notes": "The work item is demo-task. Planner's owner id is planner. Writer's owner id is writer."
+  }
+}

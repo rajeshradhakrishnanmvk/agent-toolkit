@@ -12,7 +12,18 @@ import {
   memoryStore,
   chatComplete,
   runAgent,
+  runPair,
   loadProfiles,
+  checkHandoff,
+  renderTemplate,
+  parseHandoff,
+  HandoffError,
+  createClaims,
+  ClaimError,
+  stubDemoProvider,
+  validDemoHandoff,
+  blockedDemoHandoff,
+  DEMO_MODEL_CAP,
 } from "./harness.js";
 
 function assert(condition, message) {
@@ -500,6 +511,249 @@ test("ask_human does not let the model record an answer", async function () {
   const listed = await ask.run({ action: "list" }, ctx);
   equal(listed.count, 1);
   equal(listed.requests[0].status, "pending");
+});
+
+function validHandoff(extra) {
+  const payload = {
+    goal: "Publish the week 2 row on the project page.",
+    owner: "writer-agent",
+    budget_left: "4000 tokens",
+    constraints: ["Leave the visit counter script unchanged."],
+    acceptance_criteria: ["The week 2 row shows a Live badge."],
+    questions: [],
+    artifacts: [],
+  };
+  Object.keys(extra || {}).forEach(function (key) { payload[key] = extra[key]; });
+  return payload;
+}
+
+test("handoff accepts a complete document and rejects an incomplete one", function () {
+  const ready = checkHandoff(validHandoff());
+  equal(ready.status, "ready");
+  equal(ready.ok_to_hand_off, true);
+  equal(ready.summary, "ready to hand off");
+  equal(ready.problems.length, 0);
+  equal(ready.max_bytes, 16 * 1024);
+  const missing = checkHandoff({
+    goal: "   ",
+    acceptance_criteria: [],
+    constraints: ["Leave the visit counter script unchanged."],
+    budget_left: "4000 tokens",
+  });
+  equal(missing.status, "needs-fixes");
+  equal(missing.ok_to_hand_off, false);
+  const byField = {};
+  missing.problems.forEach(function (problem) { byField[problem.field] = problem; });
+  equal(byField.goal.code, "missing-field");
+  assert(byField.goal.message.indexOf("is empty") >= 0);
+  assert(byField.acceptance_criteria.message.indexOf("is empty") >= 0);
+  assert(byField.owner.message.indexOf("is missing") >= 0);
+  assert(!byField.constraints);
+  const blocked = checkHandoff(validHandoff({ budget_left: "0" }));
+  equal(blocked.status, "blocked");
+  equal(blocked.ok_to_hand_off, false);
+  equal(blocked.problems[0].code, "budget-exhausted");
+  assert(blocked.summary.indexOf("blocked:") === 0);
+  const vague = checkHandoff(validHandoff({ acceptance_criteria: ["update the page properly"] }));
+  equal(vague.status, "needs-fixes");
+  equal(vague.problems[0].code, "vague-criterion");
+  const schema = {
+    required: ["ticket"],
+    properties: { ticket: { type: "string", minLength: 3 } },
+    additionalProperties: false,
+  };
+  const needsTicket = checkHandoff(validHandoff(), { schema: schema });
+  equal(needsTicket.problems[0].field, "ticket");
+  assert(needsTicket.problems[0].message.indexOf("schema requires it") >= 0);
+  const withTicket = checkHandoff(validHandoff({ ticket: "AT-12" }), { schema: schema });
+  equal(withTicket.status, "ready", JSON.stringify(withTicket.problems));
+  let broke = false;
+  try {
+    checkHandoff(validHandoff(), { schema: { anyOf: [] } });
+  } catch (err) {
+    broke = err;
+  }
+  assert(broke instanceof HandoffError);
+  const tiny = checkHandoff(validHandoff(), { maxBytes: 32 });
+  equal(tiny.status, "blocked");
+  equal(tiny.problems[tiny.problems.length - 1].code, "too-large");
+  assert(tiny.problems[tiny.problems.length - 1].message.indexOf("cap is 32") >= 0);
+});
+
+test("handoff template is blank and markdown round-trips", function () {
+  ["markdown", "json"].forEach(function (fmt) {
+    const text = renderTemplate(fmt);
+    const decision = checkHandoff(text);
+    equal(decision.status, "needs-fixes");
+    equal(decision.problems.map(function (problem) { return problem.field; }).join(","), "goal,acceptance_criteria,owner,constraints,budget_left");
+    assert(decision.problems.every(function (problem) { return problem.code === "missing-field"; }));
+  });
+  let bad = false;
+  try {
+    renderTemplate("yaml");
+  } catch (err) {
+    bad = err;
+  }
+  assert(bad instanceof HandoffError);
+  const document = [
+    "---",
+    "goal: Publish the week 2 row.",
+    "owner: writer-agent",
+    "budget_left:",
+    "  tokens: 4000",
+    "  cost_usd: 0.05",
+    "constraints:",
+    "  - \"note: leave the counter alone\"",
+    "acceptance_criteria:",
+    "  - The week 2 row shows a Live badge.",
+    "questions:",
+    "  - question: Which tone?",
+    "    answer: Match week 1.",
+    "---",
+    "",
+    "Ship it.",
+    "",
+  ].join("\n");
+  const parsed = parseHandoff(document);
+  equal(parsed.fields.budget_left.tokens, 4000);
+  equal(parsed.fields.budget_left.cost_usd, 0.05);
+  equal(parsed.fields.constraints[0], "note: leave the counter alone");
+  equal(parsed.fields.questions[0].question, "Which tone?");
+  equal(parsed.fields.questions[0].answer, "Match week 1.");
+  const decision = checkHandoff(document);
+  equal(decision.status, "ready", JSON.stringify(decision.problems));
+  equal(decision.format, "markdown");
+  const found = checkHandoff(validHandoff({
+    artifacts: ["docs/index.html", "./docs/index.html"],
+    acceptance_criteria: ["docs/index.html shows a Live badge."],
+  }), { files: { "docs/index.html": true } });
+  equal(found.status, "ready", JSON.stringify(found.problems));
+  equal(found.paths.found.join(","), "docs/index.html");
+  const absent = checkHandoff(validHandoff({ artifacts: ["docs/no-such-page.md"] }), { files: { "docs/index.html": true } });
+  equal(absent.paths.missing.join(","), "docs/no-such-page.md");
+  equal(absent.problems[0].code, "missing-path");
+});
+
+test("a second claim is busy until a stale lease can be taken over", async function () {
+  const now = [new Date("2026-11-02T00:00:00.000Z")];
+  const store = memoryStore();
+  const claims = createClaims(store, { now: function () { return now[0]; } });
+  const taken = await claims.take("fix-flaky-test", "agent-a", { ttlSeconds: 60, note: "editing" });
+  equal(taken.result, "taken");
+  equal(taken.ok, true);
+  equal(taken.state, "active");
+  equal(taken.expires_in, 60);
+  equal(taken.note, "editing");
+  const before = await store.read();
+  now[0] = new Date(now[0].getTime() + 10000);
+  const held = await claims.take("fix-flaky-test", "agent-a", { ttlSeconds: 60 });
+  equal(held.result, "held");
+  equal(held.expires_in, 50);
+  equal(await store.read(), before);
+  const busy = await claims.take("fix-flaky-test", "agent-b", { ttlSeconds: 60 });
+  equal(busy.result, "busy");
+  equal(busy.ok, false);
+  equal(busy.owner, "agent-a");
+  equal(await store.read(), before);
+  now[0] = new Date("2026-11-02T00:00:59.000Z");
+  equal((await claims.take("fix-flaky-test", "agent-b")).result, "busy");
+  now[0] = new Date("2026-11-02T00:01:00.000Z");
+  const stale = await claims.list({ state: "stale" });
+  equal(stale.count, 1);
+  equal(stale.claims[0].state, "expired");
+  equal(stale.claims[0].takeable, true);
+  const over = await claims.take("fix-flaky-test", "agent-b", { ttlSeconds: 30 });
+  equal(over.result, "taken-over");
+  equal(over.previous_owner, "agent-a");
+  equal(over.owner, "agent-b");
+  equal(over.expires_in, 30);
+  assert(!over.note);
+  const denied = await claims.heartbeat("fix-flaky-test", "agent-a");
+  equal(denied.result, "not-owner");
+  const beat = await claims.heartbeat("fix-flaky-test", "agent-b");
+  equal(beat.result, "renewed");
+  equal(beat.expires_in, 30);
+  const released = await claims.release("fix-flaky-test", "agent-b");
+  equal(released.result, "released");
+  equal(released.ok, true);
+  const absent = await claims.release("missing-item", "agent-a");
+  equal(absent.result, "absent");
+  let bad = false;
+  try {
+    await claims.take("-nope", "agent-a");
+  } catch (err) {
+    bad = err;
+  }
+  assert(bad instanceof ClaimError);
+});
+
+test("work_claim and handoff sit in the registry with their risk", function () {
+  const tools = createTools();
+  const handoff = tools.filter(function (tool) { return tool.name === "handoff"; })[0];
+  const claim = tools.filter(function (tool) { return tool.name === "work_claim"; })[0];
+  equal(handoff.risk, "low");
+  equal(claim.risk({ action: "list" }), "low");
+  equal(claim.risk({ action: "claim" }), "medium");
+  equal(claim.risk({ action: "release" }), "medium");
+  equal(claim.risk({ action: "heartbeat" }), "medium");
+  equal(JSON.stringify(handoff.schema).length < 400, true);
+  equal(JSON.stringify(claim.schema).length < 400, true);
+  equal(tools[0].name, "clock");
+  equal(tools[2].name, "ask_human");
+});
+
+test("two agents hand off in 4 model calls, and a blocked handoff stops the run", async function () {
+  const bundle = await shippedProfiles();
+  async function drive(handoff) {
+    let calls = 0;
+    let largest = 0;
+    const provider = stubDemoProvider(handoff);
+    const result = await runPair({
+      global: bundle.global,
+      souls: bundle.souls,
+      sessions: bundle.sessions,
+      sessionId: "handoff",
+      tools: createTools(),
+      budget: createBudget(memoryStore()),
+      claims: createClaims(memoryStore()),
+      provider: async function (request) {
+        calls += 1;
+        const blob = request.messages.map(function (message) { return message.content; }).join("\n");
+        const tokens = estimateTokens(blob);
+        if (tokens > largest) largest = tokens;
+        assert(tokens <= 2048 - 256);
+        return provider(request);
+      },
+    });
+    result.calls = calls;
+    result.largest = largest;
+    return result;
+  }
+  const ready = await drive(validDemoHandoff());
+  equal(ready.status, "done");
+  equal(ready.text, "Paris is the capital of France.");
+  assert(ready.modelCalls <= DEMO_MODEL_CAP);
+  equal(ready.modelCalls, ready.calls);
+  equal(ready.calls, 4);
+  const souls = {};
+  ready.trace.events.forEach(function (event) { if (event.soul) souls[event.soul] = true; });
+  equal(souls.planner, true);
+  equal(souls.writer, true);
+  assert(ready.traceText.indexOf("\"name\":\"work_claim\"") >= 0);
+  assert(ready.traceText.indexOf("\"name\":\"handoff\"") >= 0);
+  assert(ready.messages.some(function (message) { return message.soul === "planner"; }));
+  assert(ready.messages.some(function (message) { return message.soul === "writer"; }));
+  assert(ready.trace.events.filter(function (event) { return event.kind === "model"; }).every(function (event) {
+    return event.dropped === 0;
+  }));
+  const blocked = await drive(blockedDemoHandoff());
+  equal(blocked.status, "blocked");
+  assert(blocked.modelCalls <= DEMO_MODEL_CAP);
+  assert(blocked.text.indexOf("blocked") === 0);
+  assert(blocked.text.indexOf("exhausted") >= 0);
+  assert(blocked.messages.some(function (message) { return message.soul === "writer" && String(message.content).indexOf("exhausted") >= 0; }));
+  assert(blocked.traceText.indexOf("\"soul\":\"planner\"") >= 0);
+  assert(blocked.traceText.indexOf("\"soul\":\"writer\"") >= 0);
 });
 
 export async function runTests() {

@@ -1,0 +1,7 @@
+{
+  "id": "planner",
+  "kind": "soul",
+  "name": "Planner",
+  "instructions": "You are Planner. Claim the item, then hand Writer a complete handoff.",
+  "config": {}
+}

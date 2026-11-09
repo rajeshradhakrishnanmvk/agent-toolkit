@@ -64,7 +64,11 @@
       <form id="composer">
         <label for="prompt">Message</label>
         <textarea id="prompt" rows="4" placeholder="What time is it and how much budget is left?"></textarea>
-        <button type="submit" id="run">Run</button>
+        <div class="row">
+          <button type="submit" id="run">Run</button>
+          <button type="button" id="duo">Run two agents</button>
+        </div>
+        <p class="muted">Run two agents: Planner claims the task and writes a handoff, then Writer checks it and answers. A blocked handoff stops the run. That demo uses at most 4 model calls.</p>
       </form>
       <p id="error" class="error" role="alert"></p>
     </main>
