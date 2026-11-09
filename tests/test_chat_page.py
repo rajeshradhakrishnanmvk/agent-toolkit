@@ -24,6 +24,7 @@ class ChatPageTest(unittest.TestCase):
         self.assertEqual(home.count("stats.srv1536099.hstgr.cloud/hit"), 1)
         self.assertIn('src="memory.js"', html)
         self.assertIn('src="profiles.js"', html)
+        self.assertIn('src="airport.js"', html)
         self.assertIn('src="chat.js"', html)
         self.assertIn('href="chat.css"', html)
         self.assertNotIn("src=\"http", html.lower())
@@ -57,7 +58,7 @@ class ChatPageTest(unittest.TestCase):
     def test_chat_page_does_not_replace_the_homepage_counter(self) -> None:
         html = (CHAT / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("stats.srv1536099.hstgr.cloud/hit", html)
-        self.assertEqual(html.lower().count("<script"), 3)
+        self.assertEqual(html.lower().count("<script"), 4)
 
     def test_profiles_are_data_and_logic_is_not_a_persona(self) -> None:
         logic = ["chat.js", "memory.js", "profiles.js", "index.html", "chat.css"]

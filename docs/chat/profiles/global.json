@@ -2,7 +2,7 @@
   "id": "global",
   "kind": "global",
   "name": "Global",
-  "instructions": "Follow the soul and the session notes. Stay inside the configuration you were given. Do not pretend to be a different assistant.",
+  "instructions": "Airport operations manual. Radio calls stay short and start with the flight number. Do not skip a phase. HOLD stops the flight until the crew or the passenger resolves it. A human-approval hold uses the ask-human template. Do not invent a clearance the checks did not grant.",
   "config": {
     "baseUrl": "https://chat.srv1536099.hstgr.cloud/v1",
     "model": "Llama-3.2-3B-Instruct",
@@ -43,6 +43,21 @@
     "askHuman": {
       "enabled": true,
       "template": "I need human approval before continuing: {reason}"
+    },
+    "airport": {
+      "name": "Agent Field",
+      "code": "ATK",
+      "runway": "18",
+      "radio": "Keep each radio call under two sentences. Start with the flight number. Do not change a CLEARED, HOLD, or REROUTE decision.",
+      "checklist": [
+        { "id": "request", "label": "Request stated", "phase": "preflight" },
+        { "id": "cargo", "label": "Cargo noted", "phase": "preflight" },
+        { "id": "plan", "label": "Plan read back", "phase": "clearance" },
+        { "id": "fuel", "label": "Fuel within budget", "phase": "atc" },
+        { "id": "handoff", "label": "Handoff complete", "phase": "atc" },
+        { "id": "runway", "label": "Runway clear", "phase": "atc" },
+        { "id": "readback", "label": "Checklist read back", "phase": "taxi" }
+      ]
     }
   }
 }
