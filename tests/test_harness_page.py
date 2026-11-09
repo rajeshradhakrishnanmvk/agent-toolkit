@@ -37,7 +37,12 @@ class HarnessPageTest(unittest.TestCase):
             "profiles/manifest.json",
             "profiles/global.json",
             "profiles/souls/general.json",
+            "profiles/souls/planner.json",
+            "profiles/souls/writer.json",
             "profiles/sessions/demo.json",
+            "profiles/sessions/handoff.json",
+            "handoff.js",
+            "claims.js",
         ):
             self.assertTrue((HARNESS / name).is_file(), name)
         self.assertFalse((HARNESS / "cli.js").exists())
@@ -69,6 +74,7 @@ class HarnessPageTest(unittest.TestCase):
             lowered = text.lower()
             self.assertNotIn("fonts.googleapis", lowered, path.name)
             self.assertNotIn("cdn.jsdelivr", lowered, path.name)
+            self.assertNotRegex(lowered, r"dog[\s-]*food", path.name)
         self.assertTrue(named)
         html = (HARNESS / "index.html").read_text(encoding="utf-8")
         self.assertIn('type="module"', html)
@@ -78,6 +84,20 @@ class HarnessPageTest(unittest.TestCase):
         self.assertIn("stays in this tab", html)
         page = (HARNESS / "test.html").read_text(encoding="utf-8")
         self.assertIn('src="test-page.js"', page)
+        index = (HARNESS / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Run two agents", index)
+        self.assertIn('id="duo"', index)
+        harness_readme = (HARNESS / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Planner", harness_readme)
+        self.assertIn("Writer", harness_readme)
+        self.assertIn("work_claim", harness_readme)
+        self.assertIn("IndexedDB keyword memory", harness_readme)
+        self.assertIn("virtual file workspace", harness_readme)
+        self.assertIn("MCP-style bridge", harness_readme)
+        self.assertIn("golden-prompt", harness_readme)
+        self.assertIn("inbound channel", harness_readme)
+        self.assertIn("scheduled runs", harness_readme)
+        self.assertIn("multi-session router", harness_readme)
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("docs/harness/", readme)
         self.assertIn("https://rajeshradhakrishnanmvk.github.io/agent-toolkit/harness/", readme)

@@ -8,18 +8,25 @@ import {
   createTrace,
   createProvider,
   runAgent,
+  runPair,
+  stubDemoProvider,
   webStore,
   redact,
+  createClaims,
 } from "./harness.js";
 
 const KEY_NAME = "agent-toolkit.harness.apiKey.v1";
 const PAUSE_NAME = "agent-toolkit.harness.pause.v1";
 const BUDGET_NAME = "agent-toolkit.harness.budget.v1";
 const APPROVAL_NAME = "agent-toolkit.harness.approvals.v1";
+const CLAIM_NAME = "agent-toolkit.harness.claims.v1";
 
 const budget = createBudget(webStore(localStorage, BUDGET_NAME));
 const approvals = createApprovals(webStore(localStorage, APPROVAL_NAME));
+const claims = createClaims(webStore(localStorage, CLAIM_NAME));
+const handoffBox = { value: null };
 const tools = createTools();
+const stubPreview = new URLSearchParams(location.search).get("stub") === "1";
 
 const sessionEl = document.getElementById("session");
 const autonomyEl = document.getElementById("autonomy");
@@ -36,6 +43,7 @@ const systemEl = document.getElementById("system-view");
 const errorEl = document.getElementById("error");
 const promptEl = document.getElementById("prompt");
 const runEl = document.getElementById("run");
+const duoEl = document.getElementById("duo");
 
 let bundle = null;
 let messages = [];
@@ -63,10 +71,13 @@ function currentConfig() {
 
 function riskLabel(tool) {
   if (typeof tool.risk !== "function") return tool.risk;
-  const plain = tool.risk({});
+  const listed = tool.risk({ action: "list" });
+  const claim = tool.risk({ action: "claim" });
+  const status = tool.risk({ action: "status" });
   const record = tool.risk({ action: "record" });
-  if (plain === record) return plain;
-  return plain + ", " + record + " for record";
+  if (listed !== claim) return listed + " for list, " + claim + " for claim";
+  if (status !== record) return status + ", " + record + " for record";
+  return status;
 }
 
 function renderTools() {
@@ -89,10 +100,11 @@ function renderThread() {
     const article = document.createElement("article");
     const content = String(message.content || "");
     const tool = content.indexOf("Tool result") === 0;
-    article.className = "bubble " + (message.role === "assistant" ? "assistant" : "user");
+    const soul = message.soul ? message.soul.charAt(0).toUpperCase() + message.soul.slice(1) : "";
+    article.className = "bubble " + (message.role === "assistant" ? "assistant" : "user") + (message.soul ? " " + message.soul : "");
     const who = document.createElement("p");
     who.className = "who";
-    who.textContent = message.role === "assistant" ? "Assistant" : tool ? "Tool" : "You";
+    who.textContent = soul ? (tool ? soul + " · tool" : soul) : (message.role === "assistant" ? "Assistant" : tool ? "Tool" : "You");
     const body = document.createElement("pre");
     body.textContent = content;
     article.appendChild(who);
@@ -178,6 +190,8 @@ function agentOptions(extra) {
     tools: tools,
     budget: budget,
     approvals: approvals,
+    claims: claims,
+    handoffBox: handoffBox,
     trace: trace,
     provider: provider(),
     answeredBy: "person",
@@ -264,7 +278,11 @@ async function boot() {
       sessionStorage.removeItem(PAUSE_NAME);
     }
   }
-  if (!paused) statusEl.textContent = "Ready.";
+  if (!paused) {
+    statusEl.textContent = stubPreview
+      ? "Ready. Stubbed preview is on for Run two agents. No API key is sent."
+      : "Ready.";
+  }
 }
 
 sessionEl.addEventListener("change", async function () {
@@ -316,6 +334,74 @@ document.getElementById("composer").addEventListener("submit", function (event) 
   promptEl.value = "";
   turn({ messages: messages, input: text });
 });
+
+duoEl.addEventListener("click", function () {
+  if (!bundle) return;
+  if (paused) {
+    setError("Approve or deny the waiting tool before the next message.");
+    return;
+  }
+  if (!stubPreview && !keyEl.value.trim()) {
+    setError("Type an API key. It stays in this browser and is sent only to the endpoint above.");
+    return;
+  }
+  if (!stubPreview) sessionStorage.setItem(KEY_NAME, keyEl.value.trim());
+  if (bundle && bundle.sessions.handoff) {
+    sessionEl.value = "handoff";
+    renderSystem();
+  }
+  messages = [];
+  trace = createTrace();
+  renderThread();
+  turnDuo();
+});
+
+async function turnDuo() {
+  if (busy) return;
+  busy = true;
+  runEl.disabled = true;
+  duoEl.disabled = true;
+  setError("");
+  try {
+    const result = await runPair({
+      global: bundle.global,
+      souls: bundle.souls,
+      sessions: bundle.sessions,
+      sessionId: "handoff",
+      tools: tools,
+      budget: budget,
+      claims: claims,
+      trace: trace,
+      provider: stubPreview ? stubDemoProvider() : provider(),
+      onStep: function (snap) {
+        messages = snap.messages;
+        renderThread();
+        statusEl.textContent = snap.status;
+      },
+    });
+    messages = result.messages || messages;
+    renderThread();
+    if (result.status === "done") {
+      setError("");
+      statusEl.textContent = "Done. " + result.modelCalls + " model calls." + (stubPreview ? " Stubbed preview. No API key was sent." : "");
+    } else if (result.status === "blocked" || result.status === "stopped") {
+      statusEl.textContent = "Stopped.";
+      setError(result.text || "The handoff stopped the run.");
+    } else {
+      statusEl.textContent = result.text || result.status;
+      if (result.status === "budget-stop") setError(result.text || "");
+    }
+  } catch (err) {
+    setError(err && err.message ? err.message : "The turn failed.");
+    statusEl.textContent = "The turn stopped with an error.";
+  } finally {
+    busy = false;
+    runEl.disabled = false;
+    duoEl.disabled = false;
+    await renderBudget();
+    await renderPending();
+  }
+}
 
 document.getElementById("approve").addEventListener("click", function () {
   if (!paused || busy) return;

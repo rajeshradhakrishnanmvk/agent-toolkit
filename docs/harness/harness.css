@@ -119,6 +119,10 @@ input, select, textarea {
 
 .bubble.assistant { border-color: #b7d7cc; }
 
+.bubble.planner { border-color: #c9b27a; }
+
+.bubble.writer { border-color: #8fbfb0; }
+
 .who { margin: 0 0 0.3rem; font-size: 0.8rem; color: var(--muted); }
 
 pre {
