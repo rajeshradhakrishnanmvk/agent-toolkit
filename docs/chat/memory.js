@@ -14,7 +14,7 @@
     have: 1, has: 1, not: 1, but: 1, if: 1, so: 1, about: 1, your: 1, our: 1,
   };
 
-  /* Canonical form for a few surface words. Add pairs as plain strings. */
+   /* Fallback aliases. The page uses the synonym map on the global profile. */
   var SYNONYMS = {
     kid: "child",
     kids: "child",
@@ -32,7 +32,7 @@
   };
 
   var DB_NAME = "agent-toolkit-chat";
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;
 
   function estimateTokens(text) {
     var count = Array.from(String(text || "")).length;
@@ -40,22 +40,23 @@
     return Math.ceil(count / 4);
   }
 
-  function stem(token) {
-    var word = SYNONYMS[token] || token;
+  function stem(token, synonyms) {
+    var map = synonyms || SYNONYMS;
+    var word = map[token] || token;
     if (word.length > 5 && word.slice(-3) === "ing") word = word.slice(0, -3);
     else if (word.length > 4 && word.slice(-2) === "ed") word = word.slice(0, -2);
     else if (word.length > 4 && word.slice(-2) === "es") word = word.slice(0, -2);
     else if (word.length > 3 && word.slice(-1) === "s") word = word.slice(0, -1);
-    if (SYNONYMS[word]) word = SYNONYMS[word];
+    if (map[word]) word = map[word];
     return word;
   }
 
-  function tokenize(text) {
+  function tokenize(text, synonyms) {
     var raw = String(text || "").toLowerCase().split(/[^a-z0-9]+/);
     var out = [];
     for (var i = 0; i < raw.length; i += 1) {
       if (!raw[i] || STOPWORDS[raw[i]]) continue;
-      var token = stem(raw[i]);
+      var token = stem(raw[i], synonyms);
       if (!token || STOPWORDS[token]) continue;
       out.push(token);
     }
@@ -68,13 +69,13 @@
     return tf;
   }
 
-  function rank(query, docs) {
-    var qTokens = tokenize(query);
+  function rank(query, docs, synonyms) {
+    var qTokens = tokenize(query, synonyms);
     var prepared = [];
     var df = {};
     var lengthSum = 0;
     for (var i = 0; i < docs.length; i += 1) {
-      var tokens = tokenize(docs[i].content || "");
+      var tokens = tokenize(docs[i].content || "", synonyms);
       var tf = termFreq(tokens);
       prepared.push({ doc: docs[i], tf: tf, len: tokens.length });
       lengthSum += tokens.length;
@@ -122,9 +123,13 @@
     var raw = String(text || "");
     if (tokenBudget <= 0) return "";
     if (estimateTokens(raw) <= tokenBudget) return raw;
-    var slice = Array.from(raw).slice(0, Math.max(0, tokenBudget * 4));
-    var clipped = slice.join("").replace(/\s+\S*$/, "").trim();
-    return clipped ? clipped + "…" : "";
+    var maxChars = Math.max(0, tokenBudget * 4 - 1);
+    var clipped = Array.from(raw).slice(0, maxChars).join("").replace(/\s+\S*$/, "").trim();
+    if (estimateTokens(clipped) > tokenBudget) {
+      clipped = Array.from(clipped).slice(0, maxChars).join("");
+    }
+    if (clipped && estimateTokens(clipped + "…") <= tokenBudget) clipped += "…";
+    return clipped;
   }
 
   function messageTokens(messages) {
@@ -210,7 +215,7 @@
       if (!source[c] || recentIds[source[c].id]) continue;
       corpus.push(source[c]);
     }
-    var ranked = rank(opts.query || "", corpus);
+    var ranked = rank(opts.query || "", corpus, opts.synonyms);
     var recalled = [];
     for (var k = 0; k < ranked.length && recalled.length < topK; k += 1) {
       if (ranked[k].score <= 0) continue;
@@ -263,6 +268,9 @@
         if (!db.objectStoreNames.contains("messages")) {
           var messages = db.createObjectStore("messages", { keyPath: "id" });
           messages.createIndex("convId", "convId", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("profiles")) {
+          db.createObjectStore("profiles", { keyPath: "key" });
         }
       };
       request.onsuccess = function () { resolve(request.result); };

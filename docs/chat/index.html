@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chat — agent-toolkit</title>
-  <meta name="description" content="Browser chat for the financial consultant client in chat_app.py. The API key stays in this browser.">
+  <meta name="description" content="Browser chat shaped by global, soul, and session profiles. The API key stays in this browser.">
   <link rel="stylesheet" href="chat.css">
 </head>
 <body>
@@ -15,14 +15,23 @@
         <a class="home" href="../">agent-toolkit</a>
         <button type="button" id="new-chat">New chat</button>
       </div>
+      <label class="session-label">Project
+        <select id="session-pick"></select>
+      </label>
+      <button type="button" id="new-session">New project</button>
       <ul class="conv-list" id="conv-list"></ul>
       <p class="side-note">Conversations and keyword memory stay in this browser. This page is not a hosted chat service. Recalled notes are a word match, not a semantic search. Summary text is sent to the model only when memory is on.</p>
     </aside>
     <div class="main">
       <header class="top">
         <button type="button" class="menu" id="menu" aria-expanded="false" aria-controls="sidebar">Chats</button>
-        <h1 id="title">Chat</h1>
-        <button type="button" id="open-settings">Settings</button>
+        <div class="title-block">
+          <h1 id="title">Chat</h1>
+          <p id="active-profile">Loading profiles…</p>
+        </div>
+        <button type="button" id="open-profiles">Profiles</button>
+        <button type="button" id="view-prompt">Prompt</button>
+        <button type="button" id="open-settings">Key</button>
       </header>
       <div class="memory-bar">
         <label class="check"><input id="memory-on" type="checkbox"> Memory</label>
@@ -53,16 +62,10 @@
 
   <dialog id="settings">
     <form method="dialog" id="settings-form">
-      <h2>Settings</h2>
-      <p class="warn">This is a client-side demo, not a hosted service. A key in browser storage is visible to you and to any script on this page. Do not use a key you cannot rotate. This page does not run the Python budget, handoff, or claim files. It estimates a budget locally, then makes one model call for the advisor step, the same shape as <code>chat_app.py</code>.</p>
-      <label>Base URL <input id="base-url" name="baseUrl" type="url" autocomplete="off" required></label>
-      <label>Model <input id="model" name="model" type="text" autocomplete="off" required></label>
+      <h2>API key</h2>
+      <p class="warn">This is a client-side demo, not a hosted service. A key in browser storage is visible to you and to any script on this page. Do not use a key you cannot rotate. Endpoint, model, temperature, budgets, and instructions are profiles, not this dialog.</p>
       <label>API key <input id="api-key" name="apiKey" type="password" autocomplete="off" placeholder="Typed here. Never stored in the repository."></label>
       <label class="check"><input id="remember-key" type="checkbox"> Remember the key in this browser (local storage). Leave this off to keep it for this tab only.</label>
-      <label>Max tokens per reply <input id="max-tokens" type="number" min="1" step="1" required></label>
-      <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" required></label>
-      <label>Budget token cap <input id="budget-tokens" type="number" min="1" step="1" required></label>
-      <label>Budget tool-call cap <input id="budget-tools" type="number" min="1" step="1" required></label>
       <div class="dialog-actions">
         <button type="button" id="forget-key">Forget key</button>
         <button type="submit" value="close">Close</button>
@@ -80,7 +83,40 @@
       </div>
     </form>
   </dialog>
+  <dialog id="profile-dialog">
+    <form method="dialog" id="profile-form">
+      <h2>Profiles</h2>
+      <p class="warn">Instructions are text. Configuration is JSON. Later layers override earlier ones: global, then soul, then session. Edits stay in this browser until you reset to the shipped file.</p>
+      <label>Which profile
+        <select id="profile-pick"></select>
+      </label>
+      <label>Instructions
+        <textarea id="profile-instructions" rows="6"></textarea>
+      </label>
+      <label>Configuration JSON
+        <textarea id="profile-config" rows="10" spellcheck="false"></textarea>
+      </label>
+      <p id="profile-error" class="form-error"></p>
+      <div class="dialog-actions">
+        <button type="button" id="profile-reset">Reset to default</button>
+        <button type="button" id="profile-export">Export</button>
+        <button type="button" id="profile-import">Import</button>
+        <input id="profile-file" type="file" accept="application/json">
+        <button type="button" id="profile-save">Save</button>
+        <button type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="prompt-dialog">
+    <form method="dialog">
+      <h2>Composed system prompt</h2>
+      <p class="warn">This is global, then soul, then session. Summary, recalled notes, and recent turns are added when you send, inside the context budget.</p>
+      <textarea id="composed-text" rows="14" readonly></textarea>
+      <div class="dialog-actions"><button type="submit">Close</button></div>
+    </form>
+  </dialog>
   <script src="memory.js"></script>
+  <script src="profiles.js"></script>
   <script src="chat.js"></script>
 </body>
 </html>

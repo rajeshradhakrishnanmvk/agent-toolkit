@@ -1,0 +1,10 @@
+{
+  "souls": [
+    "financial-consultant.json",
+    "general-assistant.json",
+    "editor.json"
+  ],
+  "sessions": [
+    "example.json"
+  ]
+}

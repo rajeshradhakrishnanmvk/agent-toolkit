@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -22,14 +23,16 @@ class ChatPageTest(unittest.TestCase):
         self.assertEqual(home.count("<script>"), 1)
         self.assertEqual(home.count("stats.srv1536099.hstgr.cloud/hit"), 1)
         self.assertIn('src="memory.js"', html)
+        self.assertIn('src="profiles.js"', html)
         self.assertIn('src="chat.js"', html)
         self.assertIn('href="chat.css"', html)
         self.assertNotIn("src=\"http", html.lower())
         self.assertNotIn("href=\"http", html.lower())
         self.assertIn('name="viewport"', html)
-        self.assertIn("https://chat.srv1536099.hstgr.cloud/v1", script)
-        self.assertIn("Llama-3.2-3B-Instruct", script)
-        self.assertIn("I need human approval before continuing:", script)
+        global_profile = json.loads((CHAT / "profiles" / "global.json").read_text(encoding="utf-8"))
+        self.assertEqual(global_profile["config"]["baseUrl"], "https://chat.srv1536099.hstgr.cloud/v1")
+        self.assertEqual(global_profile["config"]["model"], "Llama-3.2-3B-Instruct")
+        self.assertIn("{reason}", global_profile["config"]["askHuman"]["template"])
         self.assertIn("localStorage", script)
         self.assertIn("sessionStorage", script)
         self.assertIn("indexedDB", memory)
@@ -54,7 +57,34 @@ class ChatPageTest(unittest.TestCase):
     def test_chat_page_does_not_replace_the_homepage_counter(self) -> None:
         html = (CHAT / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("stats.srv1536099.hstgr.cloud/hit", html)
-        self.assertEqual(html.lower().count("<script"), 2)
+        self.assertEqual(html.lower().count("<script"), 3)
+
+    def test_profiles_are_data_and_logic_is_not_a_persona(self) -> None:
+        logic = ["chat.js", "memory.js", "profiles.js", "index.html", "chat.css"]
+        for name in logic:
+            text = (CHAT / name).read_text(encoding="utf-8").lower()
+            self.assertNotIn("financial", text, name)
+        profile_root = CHAT / "profiles"
+        files = [profile_root / "global.json", profile_root / "manifest.json"]
+        files.extend((profile_root / "souls").glob("*.json"))
+        files.extend((profile_root / "sessions").glob("*.json"))
+        kinds = set()
+        for path in files:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if path.name == "manifest.json":
+                self.assertIn("financial-consultant.json", data["souls"])
+                continue
+            self.assertIn(data["kind"], {"global", "soul", "session"})
+            self.assertTrue(data["id"])
+            self.assertIsInstance(data.get("config", {}), dict)
+            kinds.add(data["kind"])
+            blob = path.read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"sk-[A-Za-z0-9]{12,}", blob), path.name)
+        self.assertEqual(kinds, {"global", "soul", "session"})
+        doc = (CHAT / "PROFILES.md").read_text(encoding="utf-8")
+        self.assertIn("global", doc)
+        self.assertIn("soul", doc)
+        self.assertIn("session", doc)
 
 
 if __name__ == "__main__":

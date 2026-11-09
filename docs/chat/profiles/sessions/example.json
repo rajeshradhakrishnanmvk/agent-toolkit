@@ -1,0 +1,11 @@
+{
+  "id": "example",
+  "kind": "session",
+  "name": "Example project",
+  "instructions": "Use this session as a starting point. Replace the notes with the real project.",
+  "config": {
+    "soulId": "general-assistant",
+    "goals": "Describe what this project should finish.",
+    "notes": "Constraints, audience, and names the assistant should remember."
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "id": "global",
+  "kind": "global",
+  "name": "Global",
+  "instructions": "Follow the soul and the session notes. Stay inside the configuration you were given. Do not pretend to be a different assistant.",
+  "config": {
+    "baseUrl": "https://chat.srv1536099.hstgr.cloud/v1",
+    "model": "Llama-3.2-3B-Instruct",
+    "temperature": 0.2,
+    "maxReplyTokens": 256,
+    "contextTokens": 2048,
+    "safetyTokens": 64,
+    "legacySoulId": "financial-consultant",
+    "memory": {
+      "on": true,
+      "scope": "conversation",
+      "recallTokens": 500,
+      "topK": 4,
+      "summaryEveryTurns": 4,
+      "summaryOverflowTokens": 1200,
+      "summaryInstruction": "Summarize the conversation so far in under 120 words. Keep facts the user stated and decisions already made.\n\nPrevious summary:\n{summary}\n\nNew turns:\n{turns}",
+      "synonyms": {
+        "kid": "child",
+        "kids": "child",
+        "children": "child",
+        "child": "child",
+        "retire": "retire",
+        "retiring": "retire",
+        "retirement": "retire",
+        "dollar": "dollar",
+        "dollars": "dollar",
+        "usd": "dollar",
+        "rupee": "inr",
+        "rupees": "inr",
+        "inr": "inr"
+      }
+    },
+    "budget": {
+      "maxTokens": 12000,
+      "maxToolCalls": 120,
+      "maxCostUsd": 0.05
+    },
+    "askHuman": {
+      "enabled": true,
+      "template": "I need human approval before continuing: {reason}"
+    }
+  }
+}

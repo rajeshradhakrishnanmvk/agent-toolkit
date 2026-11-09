@@ -1,23 +1,8 @@
 (function () {
   "use strict";
 
-  var DEFAULTS = {
-    baseUrl: "https://chat.srv1536099.hstgr.cloud/v1",
-    model: "Llama-3.2-3B-Instruct",
-    maxTokens: 256,
-    temperature: 0.2,
-    systemPrompt: "You are a concise helpful assistant.",
-    maxBudgetTokens: 12000,
-    maxToolCalls: 120,
-    maxBudgetCost: 0.05,
-    rememberKey: true,
-  };
-  var TIPS = [
-    "Protect emergency fund first (3-6 months expenses).",
-    "Avoid concentration risk and keep diversification broad.",
-    "Prefer low-cost, transparent products when options are similar.",
-    "Match debt prepayment vs investing with your risk and horizon.",
-  ];
+  var profiles = { global: null, souls: {}, sessions: {}, defaults: null };
+  var activeSessionId = "";
   var CONV_KEY = "agent-toolkit.chat.conversations.v1";
   var SETTINGS_KEY = "agent-toolkit.chat.settings.v1";
   var KEY_NAME = "agent-toolkit.chat.apiKey.v1";
@@ -61,7 +46,7 @@
     sendCurrent();
   });
   document.getElementById("memory-on").addEventListener("change", function (event) {
-    active().memoryOn = event.target.checked;
+    active().memoryOn = !!event.target.checked;
     setMemoryStatus(active());
     saveState();
   });
@@ -100,6 +85,41 @@
     document.getElementById("import-file").click();
   });
   document.getElementById("import-file").addEventListener("change", importMemory);
+  document.getElementById("session-pick").addEventListener("change", function (event) {
+    activeSessionId = event.target.value;
+    localStorage.setItem("agent-toolkit.chat.activeSession", activeSessionId);
+    var vis = visibleConversations();
+    state.activeId = vis.length ? vis[0].id : "";
+    render();
+  });
+  document.getElementById("new-session").addEventListener("click", function () {
+    var name = window.prompt("Project name");
+    if (!name || !name.trim()) return;
+    var id = "s_" + Date.now().toString(36);
+    var soul = activeSoul();
+    var session = {
+      id: id,
+      kind: "session",
+      name: name.trim().slice(0, 80),
+      instructions: "",
+      config: { soulId: soul ? soul.id : "", goals: "", notes: "" },
+    };
+    profiles.sessions[id] = session;
+    activeSessionId = id;
+    localStorage.setItem("agent-toolkit.chat.activeSession", id);
+    if (memoryDb) ChatProfiles.saveStored(memoryDb, session);
+    createConversation();
+  });
+  document.getElementById("open-profiles").addEventListener("click", openProfileEditor);
+  document.getElementById("profile-pick").addEventListener("change", showProfileEditor);
+  document.getElementById("profile-save").addEventListener("click", saveProfileEditor);
+  document.getElementById("profile-reset").addEventListener("click", resetProfileEditor);
+  document.getElementById("profile-export").addEventListener("click", exportProfiles);
+  document.getElementById("profile-import").addEventListener("click", function () {
+    document.getElementById("profile-file").click();
+  });
+  document.getElementById("profile-file").addEventListener("change", importProfiles);
+  document.getElementById("view-prompt").addEventListener("click", viewComposedPrompt);
 
   boot();
 
@@ -136,9 +156,10 @@
       summary: "",
       summaryThroughTurn: 0,
       summaryStatus: "",
-      memoryOn: true,
+      memoryOn: null,
       memoryFloor: 0,
-      scope: "conversation",
+      scope: "",
+      sessionId: "",
     };
   }
 
@@ -199,26 +220,133 @@
     return merged;
   }
 
+  function cfg() {
+    return ChatProfiles.resolveConfig(profiles.global, activeSoul(), activeSession());
+  }
+
+  function systemInstructions() {
+    return ChatProfiles.composeInstructions(profiles.global, activeSoul(), activeSession());
+  }
+
+  function activeSession() {
+    return profiles.sessions[activeSessionId] || firstValue(profiles.sessions);
+  }
+
+  function activeSoul() {
+    var session = activeSession();
+    var soulId = session && session.config && session.config.soulId;
+    return profiles.souls[soulId] || firstValue(profiles.souls);
+  }
+
+  function firstValue(map) {
+    var key;
+    for (key in map) {
+      if (Object.prototype.hasOwnProperty.call(map, key)) return map[key];
+    }
+    return null;
+  }
+
+  function memoryEnabled(conv) {
+    if (conv && typeof conv.memoryOn === "boolean") return conv.memoryOn;
+    return !cfg().memory || cfg().memory.on !== false;
+  }
+
+  function memoryScope(conv) {
+    if (conv && (conv.scope === "all" || conv.scope === "conversation")) return conv.scope;
+    return cfg().memory && cfg().memory.scope === "all" ? "all" : "conversation";
+  }
+
+  function visibleConversations() {
+    return state.conversations.filter(function (conv) {
+      return conv.sessionId === activeSessionId;
+    });
+  }
+
+  function migrateLegacySettings(globalProfile) {
+    var stored = settings.legacy || {};
+    if (!stored || stored.migrated) return globalProfile;
+    var config = globalProfile.config || {};
+    if (stored.baseUrl) config.baseUrl = stored.baseUrl;
+    if (stored.model) config.model = stored.model;
+    if (stored.maxTokens) config.maxReplyTokens = stored.maxTokens;
+    if (stored.temperature != null) config.temperature = stored.temperature;
+    if (stored.maxBudgetTokens) {
+      config.budget = config.budget || {};
+      config.budget.maxTokens = stored.maxBudgetTokens;
+    }
+    if (stored.maxToolCalls) {
+      config.budget = config.budget || {};
+      config.budget.maxToolCalls = stored.maxToolCalls;
+    }
+    if (stored.maxBudgetCost) {
+      config.budget = config.budget || {};
+      config.budget.maxCostUsd = stored.maxBudgetCost;
+    }
+    globalProfile.config = config;
+    return globalProfile;
+  }
+
   function boot() {
     var legacy = readLegacyConversations();
-    ChatMemory.openDb().then(function (db) {
+    ChatProfiles.loadDefaults(fetch, "profiles/").then(function (defaults) {
+      profiles.defaults = defaults;
+      profiles.global = defaults.global;
+      profiles.souls = defaults.souls;
+      profiles.sessions = defaults.sessions;
+      return ChatMemory.openDb();
+    }).then(function (db) {
       memoryDb = db;
-      return ChatMemory.loadAll(db);
-    }).then(function (conversations) {
-      var merged = mergeConversations(conversations || [], legacy);
-      state = merged.length
-        ? { activeId: merged[0].id, conversations: merged }
-        : freshState();
+      return Promise.all([ChatMemory.loadAll(db), ChatProfiles.loadStored(db)]);
+    }).then(function (loaded) {
+      var storedProfiles = loaded[1] || [];
+      var overlay = ChatProfiles.overlay(profiles.defaults, storedProfiles.map(function (row) {
+        return row.profile || row;
+      }));
+      overlay.global = migrateLegacySettings(overlay.global);
+      profiles.global = overlay.global;
+      profiles.souls = overlay.souls;
+      profiles.sessions = overlay.sessions;
+      if (!Object.keys(profiles.sessions).length) {
+        profiles.sessions.example = {
+          id: "example",
+          kind: "session",
+          name: "Example project",
+          instructions: "",
+          config: { soulId: firstValue(profiles.souls).id },
+        };
+      }
+      activeSessionId = localStorage.getItem("agent-toolkit.chat.activeSession") || firstValue(profiles.sessions).id;
+      if (!profiles.sessions[activeSessionId]) activeSessionId = firstValue(profiles.sessions).id;
+      var legacySoul = (profiles.global.config && profiles.global.config.legacySoulId) || firstValue(profiles.souls).id;
+      if (!profiles.sessions["imported-chats"]) {
+        profiles.sessions["imported-chats"] = {
+          id: "imported-chats",
+          kind: "session",
+          name: "Imported chats",
+          instructions: "Chats saved before profiles were added.",
+          config: { soulId: legacySoul },
+        };
+      }
+      var merged = mergeConversations(loaded[0] || [], legacy);
+      if (!merged.length) merged = [blankConversation()];
+      var needsImport = merged.some(function (conv) { return !conv.sessionId; });
+      merged.forEach(function (conv) {
+        if (!conv.sessionId) conv.sessionId = "imported-chats";
+      });
+      state = { activeId: merged[0].id, conversations: merged };
       ensureMemoryFields(state);
-      return saveState();
-    }).catch(function () {
+      if (needsImport) activeSessionId = "imported-chats";
+      localStorage.setItem("agent-toolkit.chat.activeSession", activeSessionId);
+      saveSettings();
+      return saveState().then(function () {
+        return ChatProfiles.saveStored(memoryDb, profiles.sessions["imported-chats"]);
+      });
+    }).catch(function (err) {
       memoryDb = null;
-      state = legacy.length
-        ? { activeId: legacy[0].id, conversations: legacy }
-        : freshState();
+      state = legacy.length ? { activeId: legacy[0].id, conversations: legacy } : freshState();
       ensureMemoryFields(state);
+      setMemoryStatus(active(), "Profiles or IndexedDB failed to load. " + (err && err.message ? err.message : ""));
     }).then(function () {
-      ensureMemoryFields(state);
       ready = true;
       render();
     });
@@ -231,9 +359,10 @@
       if (typeof conv.summary !== "string") conv.summary = "";
       if (!conv.summaryThroughTurn) conv.summaryThroughTurn = 0;
       if (!conv.summaryStatus) conv.summaryStatus = "";
-      if (typeof conv.memoryOn !== "boolean") conv.memoryOn = true;
+      if (conv.memoryOn === undefined) conv.memoryOn = null;
       if (!conv.memoryFloor) conv.memoryFloor = 0;
-      if (conv.scope !== "all") conv.scope = "conversation";
+      if (conv.scope !== "all" && conv.scope !== "conversation") conv.scope = "";
+      if (!conv.sessionId) conv.sessionId = activeSessionId;
       (conv.messages || []).forEach(function (message, index) {
         stampMessage(message, (conv.createdAt || Date.now()) + index);
       });
@@ -253,32 +382,11 @@
     } catch (err) {
       stored = {};
     }
-    var settingsOut = {
-      baseUrl: cleanUrl(stored.baseUrl) || DEFAULTS.baseUrl,
-      model: textOr(stored.model, DEFAULTS.model),
-      maxTokens: positiveInt(stored.maxTokens, DEFAULTS.maxTokens),
-      temperature: numberOr(stored.temperature, DEFAULTS.temperature),
-      systemPrompt: textOr(stored.systemPrompt, DEFAULTS.systemPrompt),
-      maxBudgetTokens: positiveInt(stored.maxBudgetTokens, DEFAULTS.maxBudgetTokens),
-      maxToolCalls: positiveInt(stored.maxToolCalls, DEFAULTS.maxToolCalls),
-      maxBudgetCost: DEFAULTS.maxBudgetCost,
-      rememberKey: stored.rememberKey !== false,
-    };
-    return settingsOut;
+    return { rememberKey: stored.rememberKey !== false, legacy: stored };
   }
 
   function saveSettings() {
-    var copy = {
-      baseUrl: settings.baseUrl,
-      model: settings.model,
-      maxTokens: settings.maxTokens,
-      temperature: settings.temperature,
-      systemPrompt: settings.systemPrompt,
-      maxBudgetTokens: settings.maxBudgetTokens,
-      maxToolCalls: settings.maxToolCalls,
-      rememberKey: settings.rememberKey,
-    };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(copy));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ rememberKey: settings.rememberKey, migrated: true }));
   }
 
   function apiKey() {
@@ -300,25 +408,13 @@
   }
 
   function openSettings() {
-    document.getElementById("base-url").value = settings.baseUrl;
-    document.getElementById("model").value = settings.model;
     document.getElementById("api-key").value = apiKey();
     document.getElementById("remember-key").checked = settings.rememberKey;
-    document.getElementById("max-tokens").value = String(settings.maxTokens);
-    document.getElementById("temperature").value = String(settings.temperature);
-    document.getElementById("budget-tokens").value = String(settings.maxBudgetTokens);
-    document.getElementById("budget-tools").value = String(settings.maxToolCalls);
     if (typeof dialogEl.showModal === "function") dialogEl.showModal();
     else dialogEl.setAttribute("open", "");
   }
 
   function readSettingsForm() {
-    settings.baseUrl = cleanUrl(document.getElementById("base-url").value) || DEFAULTS.baseUrl;
-    settings.model = textOr(document.getElementById("model").value.trim(), DEFAULTS.model);
-    settings.maxTokens = positiveInt(document.getElementById("max-tokens").value, DEFAULTS.maxTokens);
-    settings.temperature = numberOr(document.getElementById("temperature").value, DEFAULTS.temperature);
-    settings.maxBudgetTokens = positiveInt(document.getElementById("budget-tokens").value, DEFAULTS.maxBudgetTokens);
-    settings.maxToolCalls = positiveInt(document.getElementById("budget-tools").value, DEFAULTS.maxToolCalls);
     settings.rememberKey = document.getElementById("remember-key").checked;
     setApiKey(document.getElementById("api-key").value);
     saveSettings();
@@ -327,6 +423,7 @@
 
   function createConversation() {
     var conv = blankConversation();
+    conv.sessionId = activeSessionId;
     state.conversations.unshift(conv);
     state.activeId = conv.id;
     saveState();
@@ -335,14 +432,34 @@
   }
 
   function render() {
+    if (profiles.global) {
+      var vis = visibleConversations();
+      if (!vis.length) {
+        var created = blankConversation();
+        created.sessionId = activeSessionId;
+        state.conversations.unshift(created);
+        state.activeId = created.id;
+      } else if (!vis.some(function (item) { return item.id === state.activeId; })) {
+        state.activeId = vis[0].id;
+      }
+    }
     var conv = active();
     titleEl.textContent = conv.title;
+    var soul = profiles.global ? activeSoul() : null;
+    var session = profiles.global ? activeSession() : null;
+    var label = document.getElementById("active-profile");
+    if (label) {
+      label.textContent = session
+        ? "Session: " + (session.name || session.id) + " · Soul: " + (soul ? soul.name || soul.id : "none")
+        : "Profiles not loaded";
+    }
+    fillSessionSelect();
     budgetEl.textContent = budgetLine(conv, statusDecision(conv));
-    document.getElementById("memory-on").checked = conv.memoryOn !== false;
-    document.getElementById("memory-scope").value = conv.scope === "all" ? "all" : "conversation";
+    document.getElementById("memory-on").checked = memoryEnabled(conv);
+    document.getElementById("memory-scope").value = memoryScope(conv);
     setMemoryStatus(conv);
     listEl.textContent = "";
-    state.conversations.forEach(function (item) {
+    visibleConversations().forEach(function (item) {
       var row = document.createElement("li");
       row.className = "conv-row" + (item.id === conv.id ? " active" : "");
       var pick = document.createElement("button");
@@ -373,6 +490,12 @@
       listEl.appendChild(row);
     });
     threadEl.textContent = "";
+    if (!conv.messages.length && soul && soul.greeting) {
+      var greet = document.createElement("p");
+      greet.className = "greeting";
+      greet.textContent = soul.greeting;
+      threadEl.appendChild(greet);
+    }
     conv.messages.forEach(function (message) {
       var bubble = document.createElement("article");
       bubble.className = "bubble " + message.kind;
@@ -490,7 +613,7 @@
       return;
     }
     if (cmd === "/model") {
-      pushLocal(conv, "active model: " + settings.model);
+      pushLocal(conv, "active model: " + cfg().model);
       return;
     }
     if (cmd === "/status") {
@@ -539,12 +662,14 @@
       claims: [],
       gate: gate.decision,
     };
-    if (gate.decision === "stop-and-ask-human") {
+    var ask = cfg().askHuman || {};
+    if (ask.enabled !== false && gate.decision === "stop-and-ask-human") {
       trace.outcome = "blocked-by-budget";
       conv.lastTrace = trace;
+      var askText = String(ask.template || "I need human approval before continuing: {reason}").replace("{reason}", gate.reason);
       conv.messages.push(stampMessage({
         kind: "assistant",
-        content: "I need human approval before continuing: " + gate.reason,
+        content: askText,
         meta: budgetLine(conv, gate.decision),
         trace: formatTrace(trace),
       }));
@@ -555,31 +680,17 @@
 
     busy = true;
     render();
-    var turnId = "turn-" + String(conv.turn).padStart(4, "0") + "-" + slug(userText).slice(0, 24);
-    var intake = "Clarify goals, timeline, cash flow, debt obligations, and risk tolerance. Current prompt: " + userText;
-    var analysis =
-      "User request: " + userText + "\nIntake summary: " + intake + "\nPlanning note: " + TIPS[(conv.turn - 1) % TIPS.length];
-    trace.handoffs = [
-      { stage: "intake->analysis", text: intake },
-      { stage: "analysis->advisor", text: analysis },
-    ];
-    trace.claims = [
-      "take " + turnId + ":intake owner=intake-bot",
-      "done " + turnId + ":intake owner=intake-bot",
-      "take " + turnId + ":analysis owner=analysis-bot",
-      "done " + turnId + ":analysis owner=analysis-bot",
-      "take " + turnId + ":advisor owner=advisor-bot",
-    ];
-    var system = settings.systemPrompt +
-      "\nYou are an educational financial consultant bot. Provide practical steps, assumptions, and risks. Do not claim guaranteed returns.";
-    var currentUser = "Use the internal brief to answer the user.\n\nINTAKE:\n" + intake + "\n\nANALYSIS:\n" + analysis + "\n\nUSER:\n" + userText;
-    var packed = packPrompt(conv, userText, system, currentUser);
+    var built = ChatProfiles.buildTurn(cfg(), userText, conv.turn);
+    trace.handoffs = built.handoffs;
+    trace.claims = built.claims;
+    var packed = packPrompt(conv, userText, systemInstructions(), built.currentUser);
     var messages = packed.messages;
-    record(conv, estimateTokens(intake));
-    record(conv, estimateTokens(analysis));
+    built.localTexts.forEach(function (text) { record(conv, estimateTokens(text)); });
     complete(messages).then(function (reply) {
       record(conv, estimateTokens(reply));
-      trace.claims.push("done " + turnId + ":advisor owner=advisor-bot");
+      if (built.modelStage) {
+        trace.claims.push("done " + (built.modelStage.id || "model") + " owner=" + (built.modelStage.owner || "model"));
+      }
       trace.outcome = "ok";
       conv.lastTrace = trace;
       var decision = statusDecision(conv);
@@ -615,7 +726,7 @@
     if (!key) {
       return Promise.reject(makeError(0, "Missing API key. Open Settings and enter one. It stays in this browser."));
     }
-    var url = settings.baseUrl.replace(/\/+$/, "") + "/chat/completions";
+    var url = String(cfg().baseUrl || "").replace(/\/+$/, "") + "/chat/completions";
     var controller = typeof AbortController === "function" ? new AbortController() : null;
     var timer = controller ? window.setTimeout(function () { controller.abort(); }, 60000) : 0;
     return fetch(url, {
@@ -625,10 +736,10 @@
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: settings.model,
+        model: cfg().model,
         messages: messages,
-        max_tokens: maxTokens || settings.maxTokens,
-        temperature: settings.temperature,
+        max_tokens: maxTokens || cfg().maxReplyTokens || 256,
+        temperature: cfg().temperature,
       }),
       signal: controller ? controller.signal : undefined,
     }).then(function (response) {
@@ -699,8 +810,9 @@
   }
 
   function checkBudget(conv, addTokens, addTools) {
-    var tokenState = dimensionState(conv.spent.tokens, addTokens, settings.maxBudgetTokens);
-    var toolState = dimensionState(conv.spent.toolCalls, addTools, settings.maxToolCalls);
+    var caps = (cfg().budget) || {};
+    var tokenState = dimensionState(conv.spent.tokens, addTokens, caps.maxTokens || 1);
+    var toolState = dimensionState(conv.spent.toolCalls, addTools, caps.maxToolCalls || 1);
     var decision = "continue";
     if (tokenState === "stop" || toolState === "stop") decision = "stop-and-ask-human";
     else if (tokenState === "warn" || toolState === "warn") decision = "warn";
@@ -724,7 +836,7 @@
   }
 
   function tokenReason(conv, add, decision) {
-    var limit = settings.maxBudgetTokens;
+    var limit = (cfg().budget && cfg().budget.maxTokens) || 1;
     var projected = conv.spent.tokens + add;
     if (decision === "stop-and-ask-human") {
       if (conv.spent.tokens > limit) {
@@ -736,7 +848,7 @@
   }
 
   function toolReason(conv, add, decision) {
-    var limit = settings.maxToolCalls;
+    var limit = (cfg().budget && cfg().budget.maxToolCalls) || 1;
     var projected = conv.spent.toolCalls + add;
     if (decision === "stop-and-ask-human") {
       if (conv.spent.toolCalls > limit) {
@@ -759,9 +871,9 @@
   function budgetLine(conv, decision) {
     return (
       "budget> " + decision +
-      " | tokens " + conv.spent.tokens + "/" + settings.maxBudgetTokens +
-      " | cost $" + conv.spent.costUsd.toFixed(4) + "/" + settings.maxBudgetCost.toFixed(4) +
-      " | tools " + conv.spent.toolCalls + "/" + settings.maxToolCalls
+      " | tokens " + conv.spent.tokens + "/" + ((cfg().budget && cfg().budget.maxTokens) || 0) +
+      " | cost $" + conv.spent.costUsd.toFixed(4) + "/" + Number((cfg().budget && cfg().budget.maxCostUsd) || 0).toFixed(4) +
+      " | tools " + conv.spent.toolCalls + "/" + ((cfg().budget && cfg().budget.maxToolCalls) || 0)
     );
   }
 
@@ -806,8 +918,8 @@
     var prior = history.slice(0, -1);
     var current = history.length ? history[history.length - 1] : null;
     var corpus = [];
-    if (conv.memoryOn !== false) {
-      var pool = conv.scope === "all" ? state.conversations : [conv];
+    if (memoryEnabled(conv)) {
+      var pool = memoryScope(conv) === "all" ? state.conversations : [conv];
       pool.forEach(function (item) {
         eligibleMessages(item).forEach(function (message) {
           if (current && message.id === current.id) return;
@@ -821,21 +933,22 @@
     }
     var packed = ChatMemory.assemblePrompt({
       system: system,
-      summary: conv.memoryOn === false ? "" : conv.summary,
+      summary: memoryEnabled(conv) ? conv.summary : "",
       query: userText,
       corpus: corpus,
       recent: prior.map(function (message) {
         return { id: message.id, role: message.kind, content: message.content };
       }),
       currentUser: currentUser,
-      memoryOn: conv.memoryOn !== false,
-      replyTokens: Math.max(256, settings.maxTokens || 256),
-      safetyTokens: 64,
-      contextTokens: 2048,
-      memoryTokens: 500,
-      topK: 4,
+      memoryOn: memoryEnabled(conv),
+      replyTokens: Math.max(256, cfg().maxReplyTokens || 256),
+      safetyTokens: cfg().safetyTokens == null ? 64 : cfg().safetyTokens,
+      contextTokens: cfg().contextTokens || 2048,
+      memoryTokens: (cfg().memory && cfg().memory.recallTokens) || 500,
+      topK: (cfg().memory && cfg().memory.topK) || 4,
+      synonyms: cfg().memory && cfg().memory.synonyms,
     });
-    var note = conv.memoryOn === false
+    var note = !memoryEnabled(conv)
       ? "Memory is off. This reply did not include older turns."
       : (packed.recalled.length
         ? "Keyword matches from this browser. Not a semantic search."
@@ -849,20 +962,23 @@
   }
 
   function maybeSummarize(conv) {
-    if (conv.memoryOn === false) return Promise.resolve();
+    if (!memoryEnabled(conv)) return Promise.resolve();
+    var memory = cfg().memory || {};
+    var every = memory.summaryEveryTurns || 4;
+    var overflowAt = memory.summaryOverflowTokens || 1200;
     var historyTokens = 0;
     eligibleMessages(conv).forEach(function (message) {
       historyTokens += ChatMemory.estimateTokens(message.content);
     });
-    var due = conv.turn > 0 && conv.turn % 4 === 0;
-    var overflow = historyTokens > 1200;
+    var due = conv.turn > 0 && conv.turn % every === 0;
+    var overflow = historyTokens > overflowAt;
     if ((!due && !overflow) || conv.summaryThroughTurn >= conv.turn) return Promise.resolve();
     var recent = eligibleMessages(conv).slice(-8).map(function (message) {
       return message.kind + ": " + message.content;
     }).join("\n");
+    var template = memory.summaryInstruction || "Summarize the conversation so far in under 120 words.\n\nPrevious summary:\n{summary}\n\nNew turns:\n{turns}";
     var prompt = ChatMemory.fit(
-      "Summarize this financial chat for a later turn. Keep under 120 words. Previous summary:\n" +
-        (conv.summary || "(none)") + "\n\nNew turns:\n" + recent,
+      template.replace("{summary}", conv.summary || "(none)").replace("{turns}", recent),
       700
     );
     conv.summaryStatus = "Updating summary…";
@@ -901,8 +1017,8 @@
       return;
     }
     var bits = [
-      conv.memoryOn === false ? "Memory off. Only the current step is sent." : "Memory on. Keyword recall stays on this device.",
-      conv.scope === "all" ? "Scope: all chats." : "Scope: this chat.",
+      memoryEnabled(conv) ? "Memory on. Keyword recall stays on this device." : "Memory off. Only the current step is sent.",
+      memoryScope(conv) === "all" ? "Scope: all chats." : "Scope: this chat.",
     ];
     if (conv.summaryStatus) bits.push(conv.summaryStatus);
     el.textContent = bits.join(" ");
@@ -1010,5 +1126,169 @@
     var number = Number(value);
     if (!isFinite(number)) return fallback;
     return number;
+  }
+
+  function fillSessionSelect() {
+    var select = document.getElementById("session-pick");
+    if (!select || !profiles.global) return;
+    var current = select.value;
+    select.textContent = "";
+    Object.keys(profiles.sessions).sort().forEach(function (id) {
+      var session = profiles.sessions[id];
+      var option = document.createElement("option");
+      option.value = id;
+      option.textContent = session.name || id;
+      select.appendChild(option);
+    });
+    if (profiles.sessions[activeSessionId]) select.value = activeSessionId;
+    else if (current && profiles.sessions[current]) select.value = current;
+  }
+
+  function profileChoices() {
+    var list = [{ key: "global", profile: profiles.global }];
+    Object.keys(profiles.souls).sort().forEach(function (id) {
+      list.push({ key: "soul:" + id, profile: profiles.souls[id] });
+    });
+    Object.keys(profiles.sessions).sort().forEach(function (id) {
+      list.push({ key: "session:" + id, profile: profiles.sessions[id] });
+    });
+    return list.filter(function (item) { return item.profile; });
+  }
+
+  function openProfileEditor() {
+    var select = document.getElementById("profile-pick");
+    select.textContent = "";
+    profileChoices().forEach(function (item) {
+      var option = document.createElement("option");
+      option.value = item.key;
+      option.textContent = item.profile.kind + ": " + (item.profile.name || item.profile.id);
+      select.appendChild(option);
+    });
+    var soul = activeSoul();
+    var session = activeSession();
+    if (session) select.value = "session:" + session.id;
+    else if (soul) select.value = "soul:" + soul.id;
+    showProfileEditor();
+    var dialog = document.getElementById("profile-dialog");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function selectedProfile() {
+    var key = document.getElementById("profile-pick").value;
+    if (key === "global") return profiles.global;
+    if (key.indexOf("soul:") === 0) return profiles.souls[key.slice(5)];
+    if (key.indexOf("session:") === 0) return profiles.sessions[key.slice(8)];
+    return null;
+  }
+
+  function showProfileEditor() {
+    var profile = selectedProfile();
+    document.getElementById("profile-error").textContent = "";
+    if (!profile) return;
+    document.getElementById("profile-instructions").value = profile.instructions || "";
+    document.getElementById("profile-config").value = JSON.stringify(profile.config || {}, null, 2);
+  }
+
+  function saveProfileEditor() {
+    var profile = selectedProfile();
+    var error = document.getElementById("profile-error");
+    if (!profile) return;
+    var config;
+    try {
+      config = JSON.parse(document.getElementById("profile-config").value);
+    } catch (err) {
+      error.textContent = "Config is not valid JSON. " + err.message;
+      return;
+    }
+    var next = {
+      id: profile.id,
+      kind: profile.kind,
+      name: profile.name,
+      greeting: profile.greeting,
+      instructions: document.getElementById("profile-instructions").value,
+      config: config,
+    };
+    var problem = ChatProfiles.validateProfile(next);
+    if (problem) {
+      error.textContent = problem;
+      return;
+    }
+    if (next.kind === "global") profiles.global = next;
+    if (next.kind === "soul") profiles.souls[next.id] = next;
+    if (next.kind === "session") profiles.sessions[next.id] = next;
+    error.textContent = "";
+    if (memoryDb) ChatProfiles.saveStored(memoryDb, next);
+    render();
+  }
+
+  function resetProfileEditor() {
+    var profile = selectedProfile();
+    if (!profile || !profiles.defaults) return;
+    var fresh = null;
+    if (profile.kind === "global") fresh = profiles.defaults.global;
+    if (profile.kind === "soul") fresh = profiles.defaults.souls[profile.id];
+    if (profile.kind === "session") fresh = profiles.defaults.sessions[profile.id];
+    if (!fresh) {
+      document.getElementById("profile-error").textContent = "This profile has no shipped default.";
+      return;
+    }
+    var copy = JSON.parse(JSON.stringify(fresh));
+    if (copy.kind === "global") profiles.global = copy;
+    if (copy.kind === "soul") profiles.souls[copy.id] = copy;
+    if (copy.kind === "session") profiles.sessions[copy.id] = copy;
+    if (memoryDb) ChatProfiles.deleteStored(memoryDb, copy);
+    showProfileEditor();
+    render();
+  }
+
+  function exportProfiles() {
+    var payload = {
+      version: 1,
+      kind: "agent-toolkit-profiles",
+      exportedAt: new Date().toISOString(),
+      profiles: profileChoices().map(function (item) { return item.profile; }),
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = "agent-toolkit-profiles.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importProfiles(event) {
+    var file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var data = JSON.parse(String(reader.result || ""));
+        var list = data && data.profiles;
+        if (!Array.isArray(list)) throw new Error("missing profiles");
+        list.forEach(function (profile) {
+          var problem = ChatProfiles.validateProfile(profile);
+          if (problem) throw new Error(problem);
+          if (profile.kind === "global") profiles.global = profile;
+          if (profile.kind === "soul") profiles.souls[profile.id] = profile;
+          if (profile.kind === "session") profiles.sessions[profile.id] = profile;
+          if (memoryDb) ChatProfiles.saveStored(memoryDb, profile);
+        });
+        render();
+        setMemoryStatus(active(), "Imported " + list.length + " profile" + (list.length === 1 ? "" : "s") + ".");
+      } catch (err) {
+        setMemoryStatus(active(), "Profile import failed. " + (err.message || ""));
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function viewComposedPrompt() {
+    document.getElementById("composed-text").value = systemInstructions();
+    var dialog = document.getElementById("prompt-dialog");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
   }
 })();
