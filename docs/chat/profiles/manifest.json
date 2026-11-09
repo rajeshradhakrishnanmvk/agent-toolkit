@@ -1,5 +1,10 @@
 {
   "souls": [
+    "captain.json",
+    "first-officer.json",
+    "atc.json",
+    "ground.json",
+    "cabin.json",
     "financial-consultant.json",
     "general-assistant.json",
     "editor.json"

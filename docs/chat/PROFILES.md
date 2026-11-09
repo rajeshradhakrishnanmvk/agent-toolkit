@@ -52,3 +52,15 @@ The financial consultant is one preset soul. General assistant and Editor ship a
 | `config` overrides | Any global or soul setting, including `memory` and `temperature`. |
 
 Conversations belong to one session. Switching session switches the soul and the project text. Memory of turns stays in the browser either way.
+
+## Airport
+
+The same three profiles run a takeoff. Nothing in the page script names a persona.
+
+Global `config.airport` is the operations manual: airport `name` and `code`, `runway`, short `radio` rules, and the `checklist` items. `config.askHuman.template` is the human-approval hold. Safety rules live in the global instructions: no phase skipping, and HOLD stops the flight until it is resolved.
+
+A session is a flight plan. `config.flight` is the flight number, `origin` and `destination` are the ends of the route, `cargo` and `notes` are the load, `weather` is constraints, and `crew` maps a role (`ground`, `captain`, `atc`, `first-officer`, `cabin`) to a soul id. Each conversation is one flight on that plan.
+
+Crew souls own phases. Ground owns pre-flight, the captain owns clearance and the delivered answer, ATC owns the clearance decision, the first officer owns the read-back, and cabin owns the debrief. The financial consultant soul remains an optional passenger preset. General assistant and editor stay usable as souls, but they do not own a takeoff phase unless a flight plan assigns them.
+
+Phases, in order, with at most one model call each: pre-flight (no model; HOLD if the request or destination is missing), clearance (captain, one call), ATC (deterministic fuel, handoff, and runway checks; a model call only phrases CLEARED), taxi (no model), takeoff (one call, the answer), after takeoff (one call, the debrief, also stored as the memory summary). A full takeoff is therefore four model calls. HOLD, REROUTE, a busy runway, and a 429 do not spend a call. A 429 becomes a traffic-delay hold with Retry. Later messages on a departed flight are one in-flight follow-up.

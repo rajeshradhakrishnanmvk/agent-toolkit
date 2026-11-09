@@ -120,6 +120,18 @@
   });
   document.getElementById("profile-file").addEventListener("change", importProfiles);
   document.getElementById("view-prompt").addEventListener("click", viewComposedPrompt);
+  document.getElementById("abort-flight").addEventListener("click", function () {
+    var conv = active();
+    if (!ready || busy) return;
+    busy = true;
+    drive(conv, { type: "abort" });
+  });
+  document.getElementById("retry-hold").addEventListener("click", function () {
+    var conv = active();
+    if (!ready || busy) return;
+    busy = true;
+    drive(conv, { type: "retry" });
+  });
 
   boot();
 
@@ -329,9 +341,13 @@
       }
       var merged = mergeConversations(loaded[0] || [], legacy);
       if (!merged.length) merged = [blankConversation()];
-      var needsImport = merged.some(function (conv) { return !conv.sessionId; });
+      var needsImport = merged.some(function (conv) {
+        return !conv.sessionId && conv.messages && conv.messages.length;
+      });
+      var freshInstall = !legacy.length && !(loaded[0] || []).length;
       merged.forEach(function (conv) {
-        if (!conv.sessionId) conv.sessionId = "imported-chats";
+        if (conv.sessionId) return;
+        conv.sessionId = freshInstall && !needsImport ? (profiles.sessions.example ? "example" : firstValue(profiles.sessions).id) : "imported-chats";
       });
       state = { activeId: merged[0].id, conversations: merged };
       ensureMemoryFields(state);
@@ -443,6 +459,7 @@
         state.activeId = vis[0].id;
       }
     }
+    if (profiles.global) state.conversations.forEach(ensureFlight);
     var conv = active();
     titleEl.textContent = conv.title;
     var soul = profiles.global ? activeSoul() : null;
@@ -458,6 +475,7 @@
     document.getElementById("memory-on").checked = memoryEnabled(conv);
     document.getElementById("memory-scope").value = memoryScope(conv);
     setMemoryStatus(conv);
+    renderTower(conv);
     listEl.textContent = "";
     visibleConversations().forEach(function (item) {
       var row = document.createElement("li");
@@ -465,7 +483,9 @@
       var pick = document.createElement("button");
       pick.type = "button";
       pick.className = "pick";
-      pick.textContent = item.title;
+      var flightNo = item.flight && item.flight.number ? item.flight.number + " · " : "";
+      var dest = (profiles.sessions[item.sessionId] && profiles.sessions[item.sessionId].config && profiles.sessions[item.sessionId].config.destination) || "";
+      pick.textContent = flightNo + (dest || item.title);
       pick.addEventListener("click", function () {
         state.activeId = item.id;
         saveState();
@@ -484,7 +504,11 @@
       remove.addEventListener("click", function () {
         deleteConversation(item.id);
       });
+      var pill = document.createElement("span");
+      pill.className = "status-pill";
+      pill.textContent = (item.flight && item.flight.status) || "Scheduled";
       row.appendChild(pick);
+      row.appendChild(pill);
       row.appendChild(rename);
       row.appendChild(remove);
       listEl.appendChild(row);
@@ -499,6 +523,12 @@
     conv.messages.forEach(function (message) {
       var bubble = document.createElement("article");
       bubble.className = "bubble " + message.kind;
+      if (message.role) {
+        var who = document.createElement("p");
+        who.className = "role";
+        who.textContent = message.role;
+        bubble.appendChild(who);
+      }
       var body = document.createElement("div");
       body.textContent = message.content;
       bubble.appendChild(body);
@@ -650,75 +680,183 @@
     pushLocal(conv, "Unknown command. /help lists the ones this page understands.");
   }
 
-  function runTurn(conv, userText) {
-    conv.turn += 1;
-    var projected = estimateTokens(userText) + 220;
-    var gate = checkBudget(conv, projected, 1);
-    var trace = {
-      turn: conv.turn,
-      outcome: "",
-      error: "",
-      handoffs: [],
-      claims: [],
-      gate: gate.decision,
+  function ensureFlight(conv) {
+    var plan = planFromSession(conv);
+    var checklist = (cfg().airport && cfg().airport.checklist) || [];
+    if (!conv.flight) {
+      var departed = (conv.messages || []).some(function (message) { return message.kind === "assistant"; });
+      conv.flight = Airport.createFlight(plan, checklist);
+      if (departed) {
+        conv.flight.status = "Departed";
+        conv.flight.phase = "inflight";
+        conv.flight.departed = true;
+      }
+    }
+    conv.flight.id = conv.id;
+    if (!conv.flight.number) conv.flight.number = plan.flight;
+    if (!conv.flight.origin) conv.flight.origin = plan.origin;
+    if (!conv.flight.destination) conv.flight.destination = plan.destination;
+    if (!conv.flight.cargo) conv.flight.cargo = plan.cargo;
+    if (!conv.flight.weather) conv.flight.weather = plan.weather;
+    if (!conv.flight.checklist || !conv.flight.checklist.length) {
+      conv.flight.checklist = Airport.createFlight(plan, checklist).checklist;
+    }
+    return conv.flight;
+  }
+
+  function planFromSession(conv) {
+    var session = profiles.sessions[conv.sessionId] || activeSession() || {};
+    var config = session.config || {};
+    var airport = cfg().airport || {};
+    return {
+      flight: config.flight || session.name || "TK-100",
+      origin: config.origin || airport.code || "",
+      destination: config.destination || config.goals || "",
+      cargo: config.cargo || config.notes || "",
+      weather: config.weather || "",
     };
+  }
+
+  function crewSoul(role) {
+    var crew = (activeSession() && activeSession().config && activeSession().config.crew) || {};
+    var id = crew[role] || role;
+    return profiles.souls[id] || { id: role, kind: "soul", name: role, instructions: "" };
+  }
+
+  function boardFlights(selfId) {
+    return state.conversations.map(function (conv) {
+      if (!conv.flight) return null;
+      var copy = JSON.parse(JSON.stringify(conv.flight));
+      copy.id = conv.id;
+      return copy;
+    }).filter(function (flight) { return flight && flight.id !== selfId; });
+  }
+
+  function airportContext(conv) {
     var ask = cfg().askHuman || {};
-    if (ask.enabled !== false && gate.decision === "stop-and-ask-human") {
-      trace.outcome = "blocked-by-budget";
-      conv.lastTrace = trace;
-      var askText = String(ask.template || "I need human approval before continuing: {reason}").replace("{reason}", gate.reason);
+    var gate = checkBudget(conv, estimateTokens((conv.flight && conv.flight.request) || "") + 220, 1);
+    return {
+      id: conv.id,
+      now: Date.now(),
+      runway: (cfg().airport && cfg().airport.runway) || "18",
+      askTemplate: ask.template,
+      radio: (cfg().airport && cfg().airport.radio) || "",
+      budget: {
+        ok: gate.decision !== "stop-and-ask-human" || ask.enabled === false,
+        reason: gate.reason,
+      },
+      flights: boardFlights(conv.id),
+    };
+  }
+
+  function speak(conv, lines) {
+    (lines || []).forEach(function (line) {
       conv.messages.push(stampMessage({
-        kind: "assistant",
-        content: askText,
-        meta: budgetLine(conv, gate.decision),
-        trace: formatTrace(trace),
+        kind: line.kind || "assistant",
+        role: line.role,
+        content: line.text,
+        meta: conv.flight ? conv.flight.status : "",
       }));
-      saveState();
-      render();
+    });
+  }
+
+  function finishTurn(conv) {
+    busy = false;
+    conv.updatedAt = Date.now();
+    if (conv.flight && conv.flight.departed) {
+      var last = conv.flight.log && conv.flight.log[conv.flight.log.length - 1];
+      if (last && last.role === "cabin" && last.text) conv.summary = last.text;
+    }
+    saveState();
+    render();
+  }
+
+  function drive(conv, event) {
+    ensureFlight(conv);
+    var step = Airport.advance(conv.flight, event, airportContext(conv));
+    conv.flight = step.flight;
+    speak(conv, step.say);
+    if (!step.model) {
+      finishTurn(conv);
       return;
     }
-
-    busy = true;
-    render();
-    var built = ChatProfiles.buildTurn(cfg(), userText, conv.turn);
-    trace.handoffs = built.handoffs;
-    trace.claims = built.claims;
-    var packed = packPrompt(conv, userText, systemInstructions(), built.currentUser);
-    var messages = packed.messages;
-    built.localTexts.forEach(function (text) { record(conv, estimateTokens(text)); });
-    complete(messages).then(function (reply) {
-      record(conv, estimateTokens(reply));
-      if (built.modelStage) {
-        trace.claims.push("done " + (built.modelStage.id || "model") + " owner=" + (built.modelStage.owner || "model"));
-      }
-      trace.outcome = "ok";
-      conv.lastTrace = trace;
-      var decision = statusDecision(conv);
-      conv.messages.push(stampMessage({
-        kind: "assistant",
-        content: reply,
-        meta: budgetLine(conv, decision),
-        trace: formatTrace(trace),
-        memory: packed.panel,
-      }));
-      return maybeSummarize(conv);
-    }).catch(function (err) {
-      trace.outcome = "workflow-error";
-      trace.error = err.message || String(err);
-      conv.lastTrace = trace;
+    if (!conv.flight.departed && conv.flight.calls >= 4) {
       conv.messages.push(stampMessage({
         kind: "error",
-        content: explainError(err),
-        trace: formatTrace(trace),
-        forceTrace: true,
-        memory: packed.panel,
+        role: "atc",
+        content: "HOLD " + conv.flight.number + ". Takeoff already used 4 model calls.",
       }));
-    }).then(function () {
-      busy = false;
-      conv.updatedAt = Date.now();
-      saveState();
-      render();
+      finishTurn(conv);
+      return;
+    }
+    var system = ChatProfiles.composeInstructions(profiles.global, crewSoul(step.model.role), activeSession());
+    if (step.model.systemExtra) system += "\n\n" + step.model.systemExtra;
+    var packed = packPrompt(conv, conv.flight.request || "", system, step.model.user);
+    render();
+    complete(packed.messages).then(function (reply) {
+      record(conv, estimateTokens(reply));
+      drive(conv, { type: "model", role: step.model.role, text: reply });
+    }).catch(function (err) {
+      if (err && err.status === 429) {
+        conv.flight.status = "Holding";
+        conv.flight.hold = { kind: "traffic", reason: "rate limit" };
+        conv.messages.push(stampMessage({
+          kind: "assistant",
+          role: "atc",
+          content: "HOLD " + conv.flight.number + ". Traffic delay. The frequency is busy. Use Retry.",
+        }));
+      } else {
+        conv.messages.push(stampMessage({
+          kind: "error",
+          role: step.model.role,
+          content: explainError(err),
+          forceTrace: true,
+        }));
+      }
+      finishTurn(conv);
     });
+  }
+
+  function runTurn(conv, userText) {
+    conv.turn += 1;
+    busy = true;
+    render();
+    drive(conv, { type: "user", text: userText });
+  }
+
+  function renderTower(conv) {
+    var runway = document.getElementById("runway");
+    var phases = document.getElementById("phase-list");
+    var checks = document.getElementById("check-list");
+    var log = document.getElementById("atc-log");
+    var retry = document.getElementById("retry-hold");
+    if (!runway || !conv) return;
+    var flight = conv.flight;
+    var phase = flight && flight.phase ? flight.phase : "preflight";
+    runway.setAttribute("data-phase", phase);
+    phases.textContent = "";
+    Airport.PHASES.forEach(function (name) {
+      var item = document.createElement("li");
+      item.textContent = name;
+      if (name === phase) item.className = "phase-now";
+      phases.appendChild(item);
+    });
+    checks.textContent = "";
+    ((flight && flight.checklist) || []).forEach(function (item) {
+      var row = document.createElement("li");
+      row.textContent = (item.done ? "✓ " : "○ ") + item.label;
+      if (item.done) row.className = "check-done";
+      checks.appendChild(row);
+    });
+    log.textContent = "";
+    ((flight && flight.log) || []).slice(-8).forEach(function (entry) {
+      var row = document.createElement("li");
+      var when = new Date(entry.t || Date.now());
+      var stamp = isNaN(when.getTime()) ? "" : when.toISOString().slice(11, 19) + " ";
+      row.textContent = stamp + entry.role + ": " + entry.text;
+      log.appendChild(row);
+    });
+    if (retry) retry.hidden = !(flight && flight.hold && (flight.hold.kind === "traffic" || flight.hold.kind === "runway"));
   }
 
   function complete(messages, maxTokens) {
