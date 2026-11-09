@@ -16,22 +16,30 @@ class ChatPageTest(unittest.TestCase):
         html = (CHAT / "index.html").read_text(encoding="utf-8")
         css = (CHAT / "chat.css").read_text(encoding="utf-8")
         script = (CHAT / "chat.js").read_text(encoding="utf-8")
+        memory = (CHAT / "memory.js").read_text(encoding="utf-8")
         home = (DOCS / "index.html").read_text(encoding="utf-8")
         self.assertIn('href="chat/"', home)
         self.assertEqual(home.count("<script>"), 1)
         self.assertEqual(home.count("stats.srv1536099.hstgr.cloud/hit"), 1)
+        self.assertIn('src="memory.js"', html)
         self.assertIn('src="chat.js"', html)
         self.assertIn('href="chat.css"', html)
+        self.assertNotIn("src=\"http", html.lower())
+        self.assertNotIn("href=\"http", html.lower())
         self.assertIn('name="viewport"', html)
         self.assertIn("https://chat.srv1536099.hstgr.cloud/v1", script)
         self.assertIn("Llama-3.2-3B-Instruct", script)
         self.assertIn("I need human approval before continuing:", script)
         self.assertIn("localStorage", script)
         self.assertIn("sessionStorage", script)
+        self.assertIn("indexedDB", memory)
+        self.assertIn("SYNONYMS", memory)
+        self.assertIn("keyword match, not a semantic search", memory)
+        self.assertIn("What was recalled", script)
         self.assertNotIn("fonts.googleapis", html.lower())
         self.assertNotIn("fonts.googleapis", css.lower())
         secret = re.compile(r"sk-[A-Za-z0-9]{12,}")
-        for name, text in (("html", html), ("css", css), ("js", script)):
+        for name, text in (("html", html), ("css", css), ("js", script), ("memory", memory)):
             self.assertIsNone(secret.search(text), name)
             self.assertNotIn("OPENAI_API_KEY=", text, name)
             self.assertNotIn("Bearer sk-", text, name)
@@ -40,11 +48,13 @@ class ChatPageTest(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("docs/chat/", readme)
         self.assertIn("https://rajeshradhakrishnanmvk.github.io/agent-toolkit/chat/", readme)
+        self.assertIn("keyword-based", readme)
+        self.assertIn("IndexedDB", readme)
 
     def test_chat_page_does_not_replace_the_homepage_counter(self) -> None:
         html = (CHAT / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("stats.srv1536099.hstgr.cloud/hit", html)
-        self.assertEqual(html.lower().count("<script"), 1)
+        self.assertEqual(html.lower().count("<script"), 2)
 
 
 if __name__ == "__main__":

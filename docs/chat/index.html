@@ -16,7 +16,7 @@
         <button type="button" id="new-chat">New chat</button>
       </div>
       <ul class="conv-list" id="conv-list"></ul>
-      <p class="side-note">Conversations stay in this browser. This page is not a hosted chat service.</p>
+      <p class="side-note">Conversations and keyword memory stay in this browser. This page is not a hosted chat service. Recalled notes are a word match, not a semantic search. Summary text is sent to the model only when memory is on.</p>
     </aside>
     <div class="main">
       <header class="top">
@@ -24,6 +24,22 @@
         <h1 id="title">Chat</h1>
         <button type="button" id="open-settings">Settings</button>
       </header>
+      <div class="memory-bar">
+        <label class="check"><input id="memory-on" type="checkbox"> Memory</label>
+        <label>Scope
+          <select id="memory-scope">
+            <option value="conversation">This chat</option>
+            <option value="all">All chats</option>
+          </select>
+        </label>
+        <button type="button" id="edit-summary">Summary</button>
+        <button type="button" id="clear-memory">Clear this memory</button>
+        <button type="button" id="clear-all-memory">Clear all memory</button>
+        <button type="button" id="export-memory">Export</button>
+        <button type="button" id="import-memory">Import</button>
+        <input id="import-file" type="file" accept="application/json">
+        <p id="memory-status">Memory stays on this device except the text sent to the model.</p>
+      </div>
       <div class="thread" id="thread" aria-live="polite"></div>
       <p class="budget" id="budget"></p>
       <form class="composer" id="composer">
@@ -31,7 +47,7 @@
         <textarea id="message" rows="2" placeholder="Message. /help lists commands."></textarea>
         <button type="submit" id="send">Send</button>
       </form>
-      <p class="key-note">The API key stays in this browser. Any script on this page can read it. It is sent only to the endpoint in Settings.</p>
+      <p class="key-note">The API key stays in this browser. Any script on this page can read it. It is sent only to the endpoint in Settings. Memory is per-browser and keyword-based. It stays on the device except the summary and recalled snippets sent with a prompt.</p>
     </div>
   </div>
 
@@ -53,6 +69,18 @@
       </div>
     </form>
   </dialog>
+  <dialog id="summary-dialog">
+    <form method="dialog" id="summary-form">
+      <h2>Conversation summary</h2>
+      <p class="warn">This summary is stored in this browser. When memory is on, it is sent to the model with the next reply. Clearing it does not delete the visible transcript.</p>
+      <textarea id="summary-text" rows="8"></textarea>
+      <div class="dialog-actions">
+        <button type="button" id="clear-summary">Clear summary</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="memory.js"></script>
   <script src="chat.js"></script>
 </body>
 </html>
