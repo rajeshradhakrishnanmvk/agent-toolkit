@@ -1,0 +1,11 @@
+{
+  "id": "demo",
+  "kind": "session",
+  "name": "Demo",
+  "instructions": "This session answers with the clock and the remaining budget.",
+  "config": {
+    "soulId": "general",
+    "goals": "Say the current time and how much budget is left.",
+    "notes": "A check or a status read does not spend. Recording spend is a separate, gated action."
+  }
+}

@@ -606,6 +606,12 @@ Memory is per-browser. Turns are stored in IndexedDB on the device (existing loc
 
 The persona is not fixed in the page. A global profile, a soul profile, and a session profile are instructions plus JSON configuration. Configuration resolves global, then soul, then session. Instructions are joined in that order into the system prompt. Conversations belong to a session, and switching session switches the soul and the project notes. Shipped defaults are in `docs/chat/profiles/`. The financial consultant is one preset soul. Edits stay in the browser. See `docs/chat/PROFILES.md`.
 
+## Harness
+
+`docs/harness/` is a small browser agent loop: layered profiles, one fenced tool call at a time, a budget check before each model call, and an Approve / Deny gate for medium and high risk tools. GitHub Pages serves it at <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/harness/>. You type the API key in the browser. It stays in that tab. The agent runs on that page. Node is used only to run `node docs/harness/test.js`.
+
+The default endpoint and model match the chat page (`https://chat.srv1536099.hstgr.cloud/v1`, `Llama-3.2-3B-Instruct`). v0 tools are `clock`, `budget`, and `ask_human`. The budget and approval ledgers live in `localStorage`. A trace downloads as JSONL. Details, the profile schema, and the v1–v8 roadmap are in `docs/harness/README.md`.
+
 ## Tests
 
 ```bash

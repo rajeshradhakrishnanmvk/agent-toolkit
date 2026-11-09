@@ -1,0 +1,20 @@
+{
+  "id": "global",
+  "kind": "global",
+  "name": "Global",
+  "instructions": "Follow the soul and the session notes. Use a tool only when the reply needs a fact you were not given. Do not invent tool results. Stay inside the budget.",
+  "config": {
+    "baseUrl": "https://chat.srv1536099.hstgr.cloud/v1",
+    "model": "Llama-3.2-3B-Instruct",
+    "temperature": 0.2,
+    "maxReplyTokens": 256,
+    "contextTokens": 2048,
+    "autonomy": "supervised",
+    "budget": {
+      "maxTokens": 12000,
+      "maxToolCalls": 120,
+      "maxCostUsd": 0.05,
+      "warnRatio": 0.8
+    }
+  }
+}
