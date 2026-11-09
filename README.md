@@ -600,7 +600,9 @@ Chat commands:
 - `/model` show active model
 - `/quit` or `/exit` leave the app
 
-The same client is a static page in `docs/chat/`. After this branch is on `main`, GitHub Pages serves it at <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/chat/>. You type the API key in the browser. It stays in that browser's storage and is not in this repository. The page can keep several conversations, and it estimates a budget the way `chat_app.py` does before it calls the model. It does not run the Python ledger files.
+The same client is a static page in `docs/chat/`. GitHub Pages serves it at <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/chat/>. You type the API key in the browser. It stays in that browser's storage and is not in this repository. The page can keep several conversations, and it estimates a budget the way `chat_app.py` does before it calls the model. It does not run the Python ledger files.
+
+Memory is per-browser. Turns are stored in IndexedDB on the device (existing local-storage chats are copied in, not discarded). Recall is keyword-based, a small BM25 ranker with a stopword list and an editable synonym map in `docs/chat/memory.js`, not a semantic embedding. A short rolling summary is refreshed about every four turns, or when the history is long, through the same endpoint. A 429 skips that refresh. Only the summary and the recalled snippets that fit the prompt are sent to the model, along with as many recent turns as the 2048-token window allows after a 256-token reply and a safety margin. Turn memory off to send only the current step.
 
 ## Tests
 

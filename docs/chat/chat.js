@@ -22,9 +22,11 @@
   var SETTINGS_KEY = "agent-toolkit.chat.settings.v1";
   var KEY_NAME = "agent-toolkit.chat.apiKey.v1";
 
-  var state = loadState();
+  var state = freshState();
   var settings = loadSettings();
   var busy = false;
+  var memoryDb = null;
+  var ready = false;
 
   var listEl = document.getElementById("conv-list");
   var threadEl = document.getElementById("thread");
@@ -58,8 +60,48 @@
     event.preventDefault();
     sendCurrent();
   });
+  document.getElementById("memory-on").addEventListener("change", function (event) {
+    active().memoryOn = event.target.checked;
+    setMemoryStatus(active());
+    saveState();
+  });
+  document.getElementById("memory-scope").addEventListener("change", function (event) {
+    active().scope = event.target.value === "all" ? "all" : "conversation";
+    setMemoryStatus(active());
+    saveState();
+  });
+  document.getElementById("edit-summary").addEventListener("click", openSummary);
+  document.getElementById("clear-summary").addEventListener("click", function () {
+    var conv = active();
+    conv.summary = "";
+    conv.summaryThroughTurn = 0;
+    conv.summaryStatus = "Summary cleared.";
+    document.getElementById("summary-text").value = "";
+    saveState();
+    setMemoryStatus(conv);
+  });
+  document.getElementById("summary-form").addEventListener("submit", function () {
+    var conv = active();
+    conv.summary = document.getElementById("summary-text").value.trim();
+    conv.summaryStatus = conv.summary ? "Summary saved in this browser." : "Summary cleared.";
+    saveState();
+    setMemoryStatus(conv);
+  });
+  document.getElementById("clear-memory").addEventListener("click", function () {
+    clearMemory(active());
+  });
+  document.getElementById("clear-all-memory").addEventListener("click", function () {
+    if (!window.confirm("Clear keyword memory and summaries for every chat in this browser? Transcripts stay.")) return;
+    state.conversations.forEach(clearMemory);
+    setMemoryStatus(active());
+  });
+  document.getElementById("export-memory").addEventListener("click", exportMemory);
+  document.getElementById("import-memory").addEventListener("click", function () {
+    document.getElementById("import-file").click();
+  });
+  document.getElementById("import-file").addEventListener("change", importMemory);
 
-  render();
+  boot();
 
   function loadState() {
     try {
@@ -91,6 +133,12 @@
       spent: { tokens: 0, costUsd: 0, toolCalls: 0 },
       lastTrace: null,
       autoTrace: false,
+      summary: "",
+      summaryThroughTurn: 0,
+      summaryStatus: "",
+      memoryOn: true,
+      memoryFloor: 0,
+      scope: "conversation",
     };
   }
 
@@ -109,8 +157,93 @@
     try {
       localStorage.setItem(CONV_KEY, JSON.stringify(state));
     } catch (err) {
-      pushLocal(active(), "This browser refused to store the conversation. It may be out of space.");
+      pushLocal(active(), "This browser refused to store the conversation in local storage. IndexedDB may still have it.");
     }
+    if (!memoryDb) return Promise.resolve();
+    var writes = state.conversations.map(function (conv) {
+      return ChatMemory.replaceConversation(memoryDb, conv);
+    });
+    return Promise.all(writes).catch(function () {
+      setMemoryStatus(active(), "Could not write IndexedDB. The local storage copy is still here.");
+    });
+  }
+
+  function readLegacyConversations() {
+    try {
+      var raw = localStorage.getItem(CONV_KEY);
+      if (!raw) return [];
+      var data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.conversations)) return [];
+      return data.conversations;
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function mergeConversations(primary, secondary) {
+    var map = {};
+    function take(list) {
+      (list || []).forEach(function (conv) {
+        if (!conv || !conv.id) return;
+        var existing = map[conv.id];
+        if (!existing || (conv.updatedAt || 0) >= (existing.updatedAt || 0)) map[conv.id] = conv;
+      });
+    }
+    take(primary);
+    take(secondary);
+    var merged = [];
+    for (var id in map) {
+      if (Object.prototype.hasOwnProperty.call(map, id)) merged.push(map[id]);
+    }
+    merged.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+    return merged;
+  }
+
+  function boot() {
+    var legacy = readLegacyConversations();
+    ChatMemory.openDb().then(function (db) {
+      memoryDb = db;
+      return ChatMemory.loadAll(db);
+    }).then(function (conversations) {
+      var merged = mergeConversations(conversations || [], legacy);
+      state = merged.length
+        ? { activeId: merged[0].id, conversations: merged }
+        : freshState();
+      ensureMemoryFields(state);
+      return saveState();
+    }).catch(function () {
+      memoryDb = null;
+      state = legacy.length
+        ? { activeId: legacy[0].id, conversations: legacy }
+        : freshState();
+      ensureMemoryFields(state);
+    }).then(function () {
+      ensureMemoryFields(state);
+      ready = true;
+      render();
+    });
+  }
+
+  function ensureMemoryFields(data) {
+    if (!data.conversations || !data.conversations.length) data.conversations = [blankConversation()];
+    if (!findConv(data, data.activeId)) data.activeId = data.conversations[0].id;
+    data.conversations.forEach(function (conv) {
+      if (typeof conv.summary !== "string") conv.summary = "";
+      if (!conv.summaryThroughTurn) conv.summaryThroughTurn = 0;
+      if (!conv.summaryStatus) conv.summaryStatus = "";
+      if (typeof conv.memoryOn !== "boolean") conv.memoryOn = true;
+      if (!conv.memoryFloor) conv.memoryFloor = 0;
+      if (conv.scope !== "all") conv.scope = "conversation";
+      (conv.messages || []).forEach(function (message, index) {
+        stampMessage(message, (conv.createdAt || Date.now()) + index);
+      });
+    });
+  }
+
+  function stampMessage(message, createdAt) {
+    if (!message.id) message.id = "m_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    if (!message.createdAt) message.createdAt = createdAt || Date.now();
+    return message;
   }
 
   function loadSettings() {
@@ -205,6 +338,9 @@
     var conv = active();
     titleEl.textContent = conv.title;
     budgetEl.textContent = budgetLine(conv, statusDecision(conv));
+    document.getElementById("memory-on").checked = conv.memoryOn !== false;
+    document.getElementById("memory-scope").value = conv.scope === "all" ? "all" : "conversation";
+    setMemoryStatus(conv);
     listEl.textContent = "";
     state.conversations.forEach(function (item) {
       var row = document.createElement("li");
@@ -255,6 +391,22 @@
         trace.textContent = message.trace;
         bubble.appendChild(trace);
       }
+      if (message.kind === "assistant" && message.memory) {
+        var recall = document.createElement("details");
+        recall.className = "recall";
+        var summary = document.createElement("summary");
+        summary.textContent = "What was recalled";
+        recall.appendChild(summary);
+        var note = document.createElement("p");
+        note.textContent = message.memory.note;
+        recall.appendChild(note);
+        (message.memory.recalled || []).forEach(function (item) {
+          var line = document.createElement("p");
+          line.textContent = item.content;
+          recall.appendChild(line);
+        });
+        bubble.appendChild(recall);
+      }
       threadEl.appendChild(bubble);
     });
     threadEl.scrollTop = threadEl.scrollHeight;
@@ -295,6 +447,7 @@
     state.conversations = state.conversations.filter(function (conv) {
       return conv.id !== id;
     });
+    if (memoryDb) ChatMemory.deleteConversation(memoryDb, id);
     if (!state.conversations.length) state.conversations.push(blankConversation());
     if (!findConv(state, state.activeId)) state.activeId = state.conversations[0].id;
     saveState();
@@ -307,7 +460,7 @@
   }
 
   function sendCurrent() {
-    if (busy) return;
+    if (!ready || busy) return;
     var text = inputEl.value.trim();
     if (!text) return;
     var conv = active();
@@ -319,7 +472,7 @@
       return;
     }
     if (conv.title === "New chat") conv.title = text.slice(0, 48);
-    conv.messages.push({ kind: "user", content: text });
+    conv.messages.push(stampMessage({ kind: "user", content: text }));
     conv.updatedAt = Date.now();
     saveState();
     render();
@@ -328,11 +481,11 @@
 
   function handleCommand(conv, text) {
     var cmd = text.trim().toLowerCase();
-    conv.messages.push({ kind: "user", content: text });
+    conv.messages.push(stampMessage({ kind: "user", content: text }));
     if (cmd === "/help") {
       pushLocal(
         conv,
-        "/help show commands\n/model show the active model\n/status show the local budget\n/trace show the latest simulated trace\n/trace on|off print the trace after each answer\n/quit does not close this page"
+        "/help show commands\n/model show the active model\n/status show the local budget\n/trace show the latest simulated trace\n/trace on|off print the trace after each answer\n/quit does not close this page\nMemory is the checkbox above. It is a keyword match stored in this browser."
       );
       return;
     }
@@ -345,22 +498,22 @@
       return;
     }
     if (cmd === "/trace") {
-      conv.messages.push({
+      conv.messages.push(stampMessage({
         kind: "local",
         content: "Latest trace",
         trace: formatTrace(conv.lastTrace),
         forceTrace: true,
-      });
+      }));
       return;
     }
     if (cmd === "/trace on" || cmd === "/trace off") {
       conv.autoTrace = cmd === "/trace on";
-      conv.messages.push({
+      conv.messages.push(stampMessage({
         kind: "local",
         content: "trace> auto trace " + (conv.autoTrace ? "enabled" : "disabled"),
         trace: formatTrace(conv.lastTrace),
         forceTrace: true,
-      });
+      }));
       return;
     }
     if (cmd.indexOf("/trace") === 0) {
@@ -389,12 +542,12 @@
     if (gate.decision === "stop-and-ask-human") {
       trace.outcome = "blocked-by-budget";
       conv.lastTrace = trace;
-      conv.messages.push({
+      conv.messages.push(stampMessage({
         kind: "assistant",
         content: "I need human approval before continuing: " + gate.reason,
         meta: budgetLine(conv, gate.decision),
         trace: formatTrace(trace),
-      });
+      }));
       saveState();
       render();
       return;
@@ -417,18 +570,11 @@
       "done " + turnId + ":analysis owner=analysis-bot",
       "take " + turnId + ":advisor owner=advisor-bot",
     ];
-    var messages = [
-      {
-        role: "system",
-        content:
-          settings.systemPrompt +
-          "\nYou are an educational financial consultant bot. Provide practical steps, assumptions, and risks. Do not claim guaranteed returns.",
-      },
-      {
-        role: "user",
-        content: "Use the internal brief to answer the user.\n\nINTAKE:\n" + intake + "\n\nANALYSIS:\n" + analysis + "\n\nUSER:\n" + userText,
-      },
-    ];
+    var system = settings.systemPrompt +
+      "\nYou are an educational financial consultant bot. Provide practical steps, assumptions, and risks. Do not claim guaranteed returns.";
+    var currentUser = "Use the internal brief to answer the user.\n\nINTAKE:\n" + intake + "\n\nANALYSIS:\n" + analysis + "\n\nUSER:\n" + userText;
+    var packed = packPrompt(conv, userText, system, currentUser);
+    var messages = packed.messages;
     record(conv, estimateTokens(intake));
     record(conv, estimateTokens(analysis));
     complete(messages).then(function (reply) {
@@ -437,22 +583,25 @@
       trace.outcome = "ok";
       conv.lastTrace = trace;
       var decision = statusDecision(conv);
-      conv.messages.push({
+      conv.messages.push(stampMessage({
         kind: "assistant",
         content: reply,
         meta: budgetLine(conv, decision),
         trace: formatTrace(trace),
-      });
+        memory: packed.panel,
+      }));
+      return maybeSummarize(conv);
     }).catch(function (err) {
       trace.outcome = "workflow-error";
       trace.error = err.message || String(err);
       conv.lastTrace = trace;
-      conv.messages.push({
+      conv.messages.push(stampMessage({
         kind: "error",
         content: explainError(err),
         trace: formatTrace(trace),
         forceTrace: true,
-      });
+        memory: packed.panel,
+      }));
     }).then(function () {
       busy = false;
       conv.updatedAt = Date.now();
@@ -461,7 +610,7 @@
     });
   }
 
-  function complete(messages) {
+  function complete(messages, maxTokens) {
     var key = apiKey();
     if (!key) {
       return Promise.reject(makeError(0, "Missing API key. Open Settings and enter one. It stays in this browser."));
@@ -478,7 +627,7 @@
       body: JSON.stringify({
         model: settings.model,
         messages: messages,
-        max_tokens: settings.maxTokens,
+        max_tokens: maxTokens || settings.maxTokens,
         temperature: settings.temperature,
       }),
       signal: controller ? controller.signal : undefined,
@@ -640,8 +789,181 @@
   }
 
   function pushLocal(conv, content) {
-    conv.messages.push({ kind: "local", content: content });
+    conv.messages.push(stampMessage({ kind: "local", content: content }));
     conv.updatedAt = Date.now();
+  }
+
+  function eligibleMessages(conv) {
+    return (conv.messages || []).filter(function (message) {
+      if (message.kind !== "user" && message.kind !== "assistant") return false;
+      if ((message.createdAt || 0) < (conv.memoryFloor || 0)) return false;
+      return !!message.content;
+    });
+  }
+
+  function packPrompt(conv, userText, system, currentUser) {
+    var history = eligibleMessages(conv);
+    var prior = history.slice(0, -1);
+    var current = history.length ? history[history.length - 1] : null;
+    var corpus = [];
+    if (conv.memoryOn !== false) {
+      var pool = conv.scope === "all" ? state.conversations : [conv];
+      pool.forEach(function (item) {
+        eligibleMessages(item).forEach(function (message) {
+          if (current && message.id === current.id) return;
+          corpus.push({
+            id: message.id,
+            convId: item.id,
+            content: message.content,
+          });
+        });
+      });
+    }
+    var packed = ChatMemory.assemblePrompt({
+      system: system,
+      summary: conv.memoryOn === false ? "" : conv.summary,
+      query: userText,
+      corpus: corpus,
+      recent: prior.map(function (message) {
+        return { id: message.id, role: message.kind, content: message.content };
+      }),
+      currentUser: currentUser,
+      memoryOn: conv.memoryOn !== false,
+      replyTokens: Math.max(256, settings.maxTokens || 256),
+      safetyTokens: 64,
+      contextTokens: 2048,
+      memoryTokens: 500,
+      topK: 4,
+    });
+    var note = conv.memoryOn === false
+      ? "Memory is off. This reply did not include older turns."
+      : (packed.recalled.length
+        ? "Keyword matches from this browser. Not a semantic search."
+        : "No earlier turn matched these words.");
+    if (packed.summaryUsed) note += " A stored summary was included.";
+    if (packed.recentCount) note += " Recent turns included: " + packed.recentCount + ".";
+    return {
+      messages: packed.messages,
+      panel: { note: note, recalled: packed.recalled },
+    };
+  }
+
+  function maybeSummarize(conv) {
+    if (conv.memoryOn === false) return Promise.resolve();
+    var historyTokens = 0;
+    eligibleMessages(conv).forEach(function (message) {
+      historyTokens += ChatMemory.estimateTokens(message.content);
+    });
+    var due = conv.turn > 0 && conv.turn % 4 === 0;
+    var overflow = historyTokens > 1200;
+    if ((!due && !overflow) || conv.summaryThroughTurn >= conv.turn) return Promise.resolve();
+    var recent = eligibleMessages(conv).slice(-8).map(function (message) {
+      return message.kind + ": " + message.content;
+    }).join("\n");
+    var prompt = ChatMemory.fit(
+      "Summarize this financial chat for a later turn. Keep under 120 words. Previous summary:\n" +
+        (conv.summary || "(none)") + "\n\nNew turns:\n" + recent,
+      700
+    );
+    conv.summaryStatus = "Updating summary…";
+    setMemoryStatus(conv);
+    return complete([
+      { role: "system", content: "You write short neutral summaries. Do not give advice." },
+      { role: "user", content: prompt },
+    ], 180).then(function (summary) {
+      conv.summary = summary;
+      conv.summaryThroughTurn = conv.turn;
+      conv.summaryStatus = "Summary updated in this browser.";
+    }).catch(function (err) {
+      if (err && err.status === 429) {
+        conv.summaryStatus = "Summary skipped: rate limit (429). The reply was kept.";
+      } else {
+        conv.summaryStatus = "Summary skipped. The reply was kept.";
+      }
+    });
+  }
+
+  function clearMemory(conv) {
+    conv.summary = "";
+    conv.summaryThroughTurn = 0;
+    conv.summaryStatus = "Memory cleared for this chat. The transcript is still visible.";
+    conv.memoryFloor = Date.now();
+    saveState();
+    setMemoryStatus(conv);
+    render();
+  }
+
+  function setMemoryStatus(conv, override) {
+    var el = document.getElementById("memory-status");
+    if (!el) return;
+    if (override) {
+      el.textContent = override;
+      return;
+    }
+    var bits = [
+      conv.memoryOn === false ? "Memory off. Only the current step is sent." : "Memory on. Keyword recall stays on this device.",
+      conv.scope === "all" ? "Scope: all chats." : "Scope: this chat.",
+    ];
+    if (conv.summaryStatus) bits.push(conv.summaryStatus);
+    el.textContent = bits.join(" ");
+  }
+
+  function openSummary() {
+    var conv = active();
+    document.getElementById("summary-text").value = conv.summary || "";
+    var dialog = document.getElementById("summary-dialog");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function exportMemory() {
+    var payload = {
+      version: 1,
+      kind: "agent-toolkit-chat-memory",
+      exportedAt: new Date().toISOString(),
+      conversations: state.conversations,
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = "agent-toolkit-chat-memory.json";
+    link.click();
+    URL.revokeObjectURL(url);
+    setMemoryStatus(active(), "Exported memory JSON. It does not include the API key.");
+  }
+
+  function importMemory(event) {
+    var file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var data = JSON.parse(String(reader.result || ""));
+        var list = data && data.conversations;
+        if (!Array.isArray(list)) throw new Error("missing conversations");
+        list.forEach(function (conv) {
+          if (!conv || !conv.id) return;
+          conv.messages = Array.isArray(conv.messages) ? conv.messages : [];
+          ensureMemoryFields({ activeId: conv.id, conversations: [conv] });
+          var existing = findConv(state, conv.id);
+          if (existing) {
+            var index = state.conversations.indexOf(existing);
+            state.conversations[index] = conv;
+          } else {
+            state.conversations.unshift(conv);
+          }
+        });
+        if (!findConv(state, state.activeId)) state.activeId = state.conversations[0].id;
+        saveState();
+        render();
+        setMemoryStatus(active(), "Imported " + list.length + " conversation" + (list.length === 1 ? "" : "s") + " into this browser.");
+      } catch (err) {
+        setMemoryStatus(active(), "Import failed. The file was not a chat memory export.");
+      }
+    };
+    reader.readAsText(file);
   }
 
   function estimateTokens(text) {
