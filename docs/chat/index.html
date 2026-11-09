@@ -49,20 +49,6 @@
         <input id="import-file" type="file" accept="application/json">
         <p id="memory-status">Memory stays on this device except the text sent to the model.</p>
       </div>
-      <section id="tower" aria-label="Takeoff">
-        <div class="runway" id="runway" data-phase="preflight">
-          <div class="plane" id="plane" aria-hidden="true"></div>
-        </div>
-        <div class="tower-grid">
-          <ol id="phase-list"></ol>
-          <ul id="check-list"></ul>
-          <ol id="atc-log"></ol>
-        </div>
-        <div class="tower-actions">
-          <button type="button" id="retry-hold" hidden>Retry</button>
-          <button type="button" id="abort-flight">Abort flight</button>
-        </div>
-      </section>
       <div class="thread" id="thread" aria-live="polite"></div>
       <p class="budget" id="budget"></p>
       <form class="composer" id="composer">
@@ -130,7 +116,6 @@
     </form>
   </dialog>
   <script src="memory.js"></script>
-  <script src="airport.js"></script>
   <script src="profiles.js"></script>
   <script src="chat.js"></script>
 </body>

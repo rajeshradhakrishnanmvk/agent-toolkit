@@ -1,23 +1,11 @@
 {
   "id": "example",
   "kind": "session",
-  "name": "TK-104",
-  "instructions": "This flight plan is the project. Keep radio calls short.",
+  "name": "Example project",
+  "instructions": "Use this session as a starting point. Replace the notes with the real project.",
   "config": {
-    "soulId": "captain",
-    "flight": "TK-104",
-    "origin": "ATK",
-    "destination": "Publish the weekly notes",
-    "cargo": "Draft outline and open questions",
-    "weather": "Stay inside the token cap. No deadline.",
-    "goals": "Publish the weekly notes",
-    "notes": "Draft outline and open questions",
-    "crew": {
-      "ground": "ground",
-      "captain": "captain",
-      "atc": "atc",
-      "first-officer": "first-officer",
-      "cabin": "cabin"
-    }
+    "soulId": "general-assistant",
+    "goals": "Describe what this project should finish.",
+    "notes": "Constraints, audience, and names the assistant should remember."
   }
 }

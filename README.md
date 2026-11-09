@@ -606,8 +606,6 @@ Memory is per-browser. Turns are stored in IndexedDB on the device (existing loc
 
 The persona is not fixed in the page. A global profile, a soul profile, and a session profile are instructions plus JSON configuration. Configuration resolves global, then soul, then session. Instructions are joined in that order into the system prompt. Conversations belong to a session, and switching session switches the soul and the project notes. Shipped defaults are in `docs/chat/profiles/`. The financial consultant is one preset soul. Edits stay in the browser. See `docs/chat/PROFILES.md`.
 
-On the chat page those profiles are an airport. The global profile is the operations manual. A session is a flight plan (flight number, origin, destination, cargo, weather, crew). Souls are crew roles. Each chat is one flight: pre-flight, clearance, ATC, taxi, takeoff, and a short debrief. A full takeoff asks the model at most four times. HOLD stops the flight until you add the missing information, approve, or abort. A busy runway queues. A 429 is a traffic delay with Retry, not a silent failure. Older chats are imported as flights and, if they already have replies, marked Departed.
-
 ## Tests
 
 ```bash
