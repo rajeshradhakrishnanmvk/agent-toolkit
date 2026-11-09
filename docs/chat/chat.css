@@ -128,6 +128,37 @@ button, .home {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.title-block { min-width: 0; flex: 1; }
+#active-profile {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.session-label, #new-session { font-size: 0.85rem; }
+.session-label { display: flex; flex-direction: column; gap: 0.25rem; }
+.session-label select, #new-session, #profile-pick {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.45rem;
+}
+dialog textarea {
+  width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+  background: var(--paper);
+  color: inherit;
+  padding: 0.45rem;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+.form-error { margin: 0; color: var(--stamp); min-height: 1.2em; }
+.greeting {
+  color: var(--muted);
+  border: 1px dashed var(--rule);
+  border-radius: 0.6rem;
+  padding: 0.8rem;
+}
 .menu { display: none; }
 .thread {
   flex: 1;
