@@ -1332,21 +1332,31 @@ function finish(_opts, result) {
 export const DEMO_ITEM = "demo-task";
 export const DEMO_MODEL_CAP = 4;
 
-export function validDemoHandoff() {
+function defaultDemoPrompt() {
+  return "What is the capital of France?";
+}
+
+function normalizePrompt(prompt, fallback) {
+  const text = String(prompt == null ? fallback : prompt).trim();
+  if (!text) return String(fallback || defaultDemoPrompt());
+  return text.replace(/^Answer\s*:\s*/i, "").trim() || String(fallback || defaultDemoPrompt());
+}
+
+export function validDemoHandoff(prompt) {
   return {
-    goal: "Name the capital of France.",
+    goal: normalizePrompt(prompt, "Name the capital of France."),
     owner: "writer",
     budget_left: "800 tokens",
     constraints: ["One sentence."],
-    acceptance_criteria: ["The sentence names Paris."],
+    acceptance_criteria: ["The sentence answers the prompt directly."],
     questions: [],
     artifacts: [],
   };
 }
 
-export function blockedDemoHandoff() {
+export function blockedDemoHandoff(prompt) {
   return {
-    goal: "Name the capital of France.",
+    goal: normalizePrompt(prompt, "Name the capital of France."),
     owner: "writer",
     budget_left: "0",
     constraints: ["One sentence."],
@@ -1437,6 +1447,10 @@ export async function runPair(options) {
   if (opts.budget) await opts.budget.ensure(task, config.budget || {});
   const box = { value: null };
   const claims = opts.claims;
+  const initialPrompt = normalizePrompt(
+    opts.prompt || (session && session.config && session.config.goals) || defaultDemoPrompt(),
+    defaultDemoPrompt()
+  );
   const ctx = {
     now: opts.now || function () { return new Date(); },
     taskId: task,
@@ -1448,7 +1462,7 @@ export async function runPair(options) {
     files: opts.files || null,
     trace: trace,
   };
-  const messages = [{ role: "user", content: "What is the capital of France?" }];
+  const messages = [{ role: "user", content: initialPrompt }];
   let modelCalls = 0;
 
   async function publish(status) {
@@ -1606,9 +1620,10 @@ export async function runPair(options) {
   }
   await publish("Planner is writing the handoff.");
 
+  const handoffGoal = normalizePrompt(initialPrompt, "Name the capital of France.");
   const wrote = await ask(
     planner,
-    "Call handoff with action check. Set handoff to a JSON document: goal Name the capital of France, owner writer, budget_left 800 tokens, constraints one sentence, acceptance criterion The sentence names Paris. Leave questions and artifacts empty. Do not use a question mark."
+    "Call handoff with action check. Set handoff to a JSON document: goal " + handoffGoal + ", owner writer, budget_left 800 tokens, constraints one sentence, acceptance criterion The sentence answers the prompt directly. Leave questions and artifacts empty. Do not use a question mark."
   );
   if (wrote.budget) return stop("budget-stop", wrote.budget.reason);
   if (wrote.overflow) return stop("stopped", "Stopped: the demo allows 4 model calls.");
