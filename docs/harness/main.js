@@ -363,6 +363,7 @@ async function turnDuo() {
   duoEl.disabled = true;
   setError("");
   try {
+    const customPrompt = promptEl.value.trim();
     const result = await runPair({
       global: bundle.global,
       souls: bundle.souls,
@@ -372,7 +373,8 @@ async function turnDuo() {
       budget: budget,
       claims: claims,
       trace: trace,
-      provider: stubPreview ? stubDemoProvider() : provider(),
+      prompt: customPrompt || undefined,
+      provider: stubPreview ? stubDemoProvider(customPrompt ? validDemoHandoff(customPrompt) : null) : provider(),
       onStep: function (snap) {
         messages = snap.messages;
         renderThread();
