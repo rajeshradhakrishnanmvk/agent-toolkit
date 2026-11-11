@@ -612,7 +612,23 @@ The persona is not fixed in the page. A global profile, a soul profile, and a se
 
 The default endpoint and model match the chat page (`https://chat.srv1536099.hstgr.cloud/v1`, `Llama-3.2-3B-Instruct`). v0 tools are `clock`, `budget`, and `ask_human`. v1 adds `handoff` and `work_claim`, and a two-agent demo: Planner and Writer share one session, and a blocked handoff stops the run. The budget, approval, and claim ledgers live in `localStorage`. A trace downloads as JSONL. Details, the profile schema, and the v2–v8 roadmap are in `docs/harness/README.md`.
 
-v2 is a leaderboard for tiny-model tool calling. The fixed eval set is `tiny-tools` version 1. Run it on the harness page, download the JSON, and submit it by pull request under `docs/harness/results/`. The board is `docs/harness/leaderboard/`. Carrie White (Llama 3.2 3B via llama.cpp) is a pending live run, with no scores, until that eval is run on the Pages site and the results file lands in a follow-up pull request.
+v2 is a leaderboard for tiny-model tool calling. The fixed eval set is `tiny-tools` version 1. The board is [`docs/harness/leaderboard/`](docs/harness/leaderboard/), served at <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/harness/leaderboard/>. Carrie White (Llama 3.2 3B via llama.cpp) is a pending live run, with no scores, until that eval is run on the Pages site and the results file lands in a follow-up pull request. Field names, the index entry, and a dummy example are in [Using the leaderboard](docs/harness/README.md#using-the-leaderboard). The numbers there are made up.
+
+### Using the leaderboard
+
+1. Open the harness page on GitHub Pages: <https://rajeshradhakrishnanmvk.github.io/agent-toolkit/harness/>.
+2. Enter the endpoint, the model, and an API key. The key stays in that browser tab and is never exported. The endpoint must allow CORS from the Pages origin (`https://rajeshradhakrishnanmvk.github.io`).
+3. Press **Run eval** to run the tiny-tools eval. A live run is paced and takes a few minutes. `?stub=1` previews the eval in the browser and is not a submission.
+4. Press **Download results**. The browser saves `tiny-tools-result.json`.
+5. Add that file under `docs/harness/results/` with a new `.json` name, and add its entry to `docs/harness/results/index.json`. A scored entry is `{ "file": "<name>.json" }`. The name may use letters, digits, `.`, `_`, and `-`.
+6. Run `node docs/harness/test.js`. That command includes the results validator.
+7. Open a pull request. The templates are `.github/ISSUE_TEMPLATE/harness-result.md` and `.github/PULL_REQUEST_TEMPLATE/harness-result.md`.
+
+Do not copy the dummy example from the harness README into `docs/harness/results/` or the index.
+
+### Reading the leaderboard
+
+The board ranks scored rows by total score (`scores.value`, checks passed divided by checks), highest first. The columns are rank, model, total, and one per category (tool choice, arguments, no tool, multi-step, approval, budget), then the run date and a link to the results file. Above the table the page shows the eval set id, version, and content hash (`tiny-tools` version 1). A **pending live run** row has no results file and no numbers. The total is a dash, and the status says `pending live run`. Carrie White is that row until a live run replaces the pending index entry with a `file` entry. A labelled sample table is in the harness README. Those cells are made up.
 
 ## Tests
 

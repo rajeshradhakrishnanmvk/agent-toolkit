@@ -21,7 +21,7 @@ Two agents, on the same page:
 3. A handoff that is `blocked` or otherwise not `ready` stops the run. The reason is the checker summary and the problem list, in the thread and in the alert under the composer.
 4. The whole demo makes at most 4 model calls. Add `?stub=1` to the page address to run that script locally. The stub does not send an API key.
 
-Score the connected model with **Run eval**. The set is `tiny-tools` version 1, temperature 0. `?stub=1` also previews that eval: it does not read the API key and it does not call a model. Open the [leaderboard](leaderboard/) for submitted runs. A live run waits between requests so it stays under about 10 a minute.
+Score the connected model with **Run eval**. The set is `tiny-tools` version 1, temperature 0. `?stub=1` also previews that eval: it does not read the API key and it does not call a model. Open the [leaderboard](leaderboard/) for submitted runs. A live run waits between requests so it stays under about 10 a minute. How to submit a run, how to read a row, and a dummy example are under [Using the leaderboard](#using-the-leaderboard).
 
 The public endpoint allows about 10 requests a minute. A 429 waits and retries. A 401, a 5xx, or a network failure is shown as text and is not retried into a hidden loop.
 
@@ -148,17 +148,97 @@ A task score is checks passed divided by checks on that task. The total, and eac
 
 The content hash is SHA-256 of the canonical JSON of the task set. Object keys are sorted, arrays keep their order, and there is no extra whitespace. The browser uses SubtleCrypto. The Node tests use `node:crypto`. The hash covers the set id, version, temperature, context size, instructions, tools, prompts, and checks. It does not cover a single run. The result file stores that hash so a score stays tied to this exact set.
 
-## Contribute a result
+## Using the leaderboard
 
-1. Open the harness on the live GitHub Pages site. The model endpoint allows that origin. Use `?stub=1` only to preview. A preview does not read the API key, does not call a model, and is not a submission (`preview` is true, and the validator rejects it).
-2. Type an API key in the form. It stays in the tab. It is sent only to the endpoint in the form.
-3. Enter a leaderboard label (your name and the model).
-4. Press **Run eval**. The page shows the task it is on and waits between requests so a live run stays under about 10 a minute.
-5. Press **Download results**. The JSON has schema version 1, the eval set id, version, and hash, your label, the model id the API returned, harness version 2, the run date, total and per-category scores, and each task's checks and trace.
-6. Add that file under `docs/harness/results/` with a new `.json` name. Add an object to `entries` in `docs/harness/results/index.json` with `"file"` set to that name. Pages cannot list a folder, so the leaderboard reads the index. The shape is described in `docs/harness/results/result.schema.json` and checked by `docs/harness/validate-results.js`.
-7. Open a pull request. The issue template is `.github/ISSUE_TEMPLATE/harness-result.md`. The pull request template is `.github/PULL_REQUEST_TEMPLATE/harness-result.md`. `node docs/harness/test.js` must pass. The validator recomputes every score from the checks, checks the eval hash against the current tiny-tools v1 set, checks that every results file is in the index and every scored index entry has a file, and rejects a key-like string, an Authorization header, or a URL to a model endpoint.
+The board is the static page in `leaderboard/`. It loads `results/index.json`, then each results file named there. GitHub Pages cannot list a folder, so a file that is missing from the index does not appear. The live Pages address is in the repository README.
 
-A pending index entry has `"pending": true`, a label, and no `file` and no scores. Carrie White (Llama 3.2 3B via llama.cpp) is that kind of row. There are no numbers for her yet. Rajesh will run the eval on the live Pages site and add the real results file in a follow-up PR. That follow-up replaces the pending entry with a `file` entry so the row is scored instead of pending.
+### Submit a result
+
+1. Open the harness on the live GitHub Pages site (the address is in the repository README). Use `?stub=1` only to preview. A preview does not read the API key, does not call a model, and is not a submission. A preview sets `preview` to true, and the validator rejects it.
+2. Enter the endpoint, the model, and an API key in the form. The key stays in that browser tab (`sessionStorage` for this tab) and is never exported. It is sent only to the endpoint in the form. It is not a field in the downloaded JSON, and it is not written into the trace. The endpoint must allow CORS from the GitHub Pages origin, or the browser will not complete the request.
+3. Enter a leaderboard label (your name and the model). Press **Run eval**. The set is `tiny-tools` version 1, temperature 0. The page shows the task it is on and waits between requests so a live run stays under about 10 a minute. The ten tasks take a few minutes.
+4. Press **Download results**. The browser saves `tiny-tools-result.json`. The JSON has `schemaVersion` 1, `evalSet` (`id`, `version`, `hash`), `model.label`, `model.id` (the id the API returned), `harnessVersion` `"2"`, `runDate`, `scores` (total and `categories`), and `tasks` (each task's checks and trace). `preview` is false on a live run.
+5. Copy that file to `docs/harness/results/` under a new basename ending in `.json`. The leaderboard only loads a name made of letters, digits, `.`, `_`, and `-`. Append one object to the `entries` array in `docs/harness/results/index.json`. A scored entry is `{ "file": "<name>.json" }` and nothing else. Keep the index `schemaVersion` (`1`) and `evalSet` (`id` `tiny-tools`, `version` `1`). Scores stay in the results file. The shape is `docs/harness/results/result.schema.json`, checked by `docs/harness/validate-results.js`. A pending entry is a different object: `"pending": true`, a non-empty `label`, and no `file`, `scores`, `checks`, or `value`. `modelLabel` and `note` are optional. Carrie White (Llama 3.2 3B via llama.cpp) is that kind of row. There are no numbers for her yet. Rajesh will run the eval on the live Pages site and add the real results file in a follow-up PR. That follow-up replaces the pending entry with a `file` entry so the row is scored instead of pending.
+6. Run `node docs/harness/test.js`. That command includes the results validator. The validator recomputes every score from the checks, checks the eval hash against the current tiny-tools v1 set, checks that every results file is in the index and every scored index entry has a file, and rejects a key-like string, an Authorization header, or a URL.
+
+7. Open a pull request. The issue template is `.github/ISSUE_TEMPLATE/harness-result.md`. The pull request template is `.github/PULL_REQUEST_TEMPLATE/harness-result.md`.
+
+### Reading the leaderboard
+
+Scored rows are ranked by `scores.value` (checks passed divided by checks in the whole file), highest first. The same score is then ordered by `model.label`, then by the results filename. The columns are rank, model (the label, with the model id under it), total, tool choice, arguments, no tool, multi-step, approval, budget, run date, and a link to the results file. Category cells read `scores.categories` for `tool-choice`, `arguments`, `no-tool`, `multi-step`, `approval`, and `budget`. The page shows each ratio as a percent with one decimal. The run date is the first ten characters of `runDate`. The result link points at `docs/harness/results/<file>`.
+
+Above the table the page prints the eval set id, version, and content hash (`tiny-tools` version 1, from `hashEvalSet` in `eval.js`). A file whose `evalSet.hash` differs from that hash is still listed, with the note "Eval hash differs from this page."
+
+A **pending live run** row has no results file and no numbers. The total cell is a dash, and the status badge says `pending live run`. The note on the row is the index `note`. Carrie White is that row until a live run replaces it.
+
+### Example index entry (dummy data)
+
+`example-model-3b.json` is a made-up name. This object is the scored entry shape. It is not in `index.json`.
+
+```json
+{ "file": "example-model-3b.json" }
+```
+
+### Example result (dummy data)
+
+The numbers below are made up. The model name `example-model-3b` is not a real run. Keep this snippet in the README: it is not a file under `docs/harness/results/`, and it is not an index entry. A real download lists all ten tasks. This snippet shows one task so the field names are visible. The hash is the real tiny-tools version 1 set hash. It names the task set. The scores are made up, so this snippet would not pass the validator.
+
+```json
+{
+  "schemaVersion": 1,
+  "preview": false,
+  "evalSet": {
+    "id": "tiny-tools",
+    "version": 1,
+    "hash": "3d4361753eb1f0118606b8cdc08ef439bd57e982716b150670b269d8c8f40455"
+  },
+  "model": {
+    "label": "Example person (example-model-3b)",
+    "id": "example-model-3b"
+  },
+  "harnessVersion": "2",
+  "runDate": "2026-01-15T12:00:00.000Z",
+  "scores": {
+    "passed": 2,
+    "total": 3,
+    "value": 0.666667,
+    "categories": {
+      "tool-choice": { "passed": 2, "total": 3, "value": 0.666667 }
+    }
+  },
+  "tasks": [
+    {
+      "id": "pick-clock",
+      "category": "tool-choice",
+      "passed": 2,
+      "total": 3,
+      "value": 0.666667,
+      "checks": [
+        { "id": "tool-name", "ok": true, "detail": "clock" },
+        { "id": "args-schema", "ok": true, "detail": "match" },
+        { "id": "final-time", "ok": false, "detail": "missing" }
+      ],
+      "trace": [
+        {
+          "t": "2026-01-15T12:00:01.000Z",
+          "kind": "model",
+          "tool": "clock",
+          "promptTokens": 400,
+          "dropped": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Example board (dummy data)
+
+The numbers in this table are made up. They are not computed from the snippet above, and `example-model-3b` is not on the live board.
+
+| Rank | Model | Total | Tool choice | Arguments | No tool | Multi-step | Approval | Budget | Run date | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Example person (`example-model-3b`) | 66.7% | 75.0% | 50.0% | 100.0% | 42.9% | 66.7% | 50.0% | 2026-01-15 | `example-model-3b.json` |
 
 ## Roadmap
 
