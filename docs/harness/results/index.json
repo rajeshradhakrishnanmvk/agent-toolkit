@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "evalSet": {
+    "id": "tiny-tools",
+    "version": 1
+  },
+  "entries": [
+    {
+      "pending": true,
+      "label": "Carrie White",
+      "modelLabel": "Llama 3.2 3B via llama.cpp",
+      "note": "Pending live run. No scores yet. Rajesh will run the eval on the live Pages site and add the real results file in a follow-up PR."
+    }
+  ]
+}

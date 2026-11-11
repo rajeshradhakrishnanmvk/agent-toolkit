@@ -1,8 +1,8 @@
-# Harness v1
+# Harness
 
 A small agent harness that runs in the browser. GitHub Pages serves this folder, so the page, the loop, the tools, and the profiles are the same files.
 
-v1 adds two tools, `handoff` and `work_claim`, and a two-agent demo. Planner and Writer take turns in one session. The loop underneath is still the v0 browser slice: short turns, a pluggable provider, tools, and approval gates.
+v2 is a leaderboard for tiny models that call tools. It runs on the v0 loop and the v1 tools. v1 (`290479e`) added `handoff` and `work_claim`, and a two-agent demo. Planner and Writer take turns in one session. The loop is still short turns, a pluggable provider, tools, approval gates, a budget, and a trace.
 
 Open the harness page, type an API key, and send a message. The key stays in that browser tab. It is sent only to the endpoint in the form. Nothing in this folder is a hosted chat service, and there is no Node command for running the agent.
 
@@ -20,6 +20,8 @@ Two agents, on the same page:
 2. Planner claims `demo-task`, writes a handoff, and the run releases that claim. Writer claims the item, checks the handoff, and answers.
 3. A handoff that is `blocked` or otherwise not `ready` stops the run. The reason is the checker summary and the problem list, in the thread and in the alert under the composer.
 4. The whole demo makes at most 4 model calls. Add `?stub=1` to the page address to run that script locally. The stub does not send an API key.
+
+Score the connected model with **Run eval**. The set is `tiny-tools` version 1, temperature 0. `?stub=1` also previews that eval: it does not read the API key and it does not call a model. Open the [leaderboard](leaderboard/) for submitted runs. A live run waits between requests so it stays under about 10 a minute.
 
 The public endpoint allows about 10 requests a minute. A 429 waits and retries. A 401, a 5xx, or a network failure is shown as text and is not retried into a hidden loop.
 
@@ -125,17 +127,50 @@ Each step is a JSON object: time, kind, soul, prompt size, token estimate, tool 
 node docs/harness/test.js
 ```
 
-Or open `test.html` on the same static server. The suite covers the v0 cases (profile merge, tool-call parsing, one tool per reply, the 3-iteration cap, supervised pause and resume, a readonly block, a budget stop, the trace, 429 backoff, and the demo question against a stubbed provider) plus handoff ready / needs-fixes / blocked, a schema, the blank template, a claim conflict, a stale-claim takeover, heartbeat, and the two-agent run. That run asserts the model is called 4 times or fewer.
+Or open `test.html` on the same static server. The suite covers the v0 cases (profile merge, tool-call parsing, one tool per reply, the 3-iteration cap, supervised pause and resume, a readonly block, a budget stop, the trace, 429 backoff, and the demo question against a stubbed provider) plus handoff ready / needs-fixes / blocked, a schema, the blank template, a claim conflict, a stale-claim takeover, heartbeat, and the two-agent run. That run asserts the model is called 4 times or fewer. The v2 cases score a stubbed transcript twice, pass and fail each eval category, check that an export leaves out secrets, and run the results validator.
+
+## Eval set
+
+`tiny-tools` version 1 is ten short tasks. Eval tools are deterministic mocks with fixed outputs (`clock`, `lookup`, `echo`, `note`). They are separate from the page tools. The runner still uses `runAgent`: the same tool registry shape, autonomy modes, budget ledger, approval gate, and trace.
+
+| Category | What a pass looks like |
+| --- | --- |
+| tool-choice | The first call names the tool the prompt asked for. |
+| arguments | The call parses as JSON and matches that tool's schema. |
+| no-tool | The reply has no tool fence, and the answer contains the expected token. |
+| multi-step | A second call uses the fixed value returned by the first call. |
+| approval | A denied medium-risk call does not run, and the answer does not claim success. |
+| budget | The tool-call budget is already spent, the model asks for `clock`, and the run stops with `budget-stop` before the tool runs. |
+
+Approvals in an eval are scripted by the task. The page does not wait for a click. `deny-note` is denied. Temperature is 0. Prompts are written for a 2048-token context with a 256-token reply reserve. Estimates stay `ceil(characters / 4)`.
+
+A task score is checks passed divided by checks on that task. The total, and each category score, use that same ratio over the checks in the group. Every check has the same weight. The stored scores are only those ratios.
+
+The content hash is SHA-256 of the canonical JSON of the task set. Object keys are sorted, arrays keep their order, and there is no extra whitespace. The browser uses SubtleCrypto. The Node tests use `node:crypto`. The hash covers the set id, version, temperature, context size, instructions, tools, prompts, and checks. It does not cover a single run. The result file stores that hash so a score stays tied to this exact set.
+
+## Contribute a result
+
+1. Open the harness on the live GitHub Pages site. The model endpoint allows that origin. Use `?stub=1` only to preview. A preview does not read the API key, does not call a model, and is not a submission (`preview` is true, and the validator rejects it).
+2. Type an API key in the form. It stays in the tab. It is sent only to the endpoint in the form.
+3. Enter a leaderboard label (your name and the model).
+4. Press **Run eval**. The page shows the task it is on and waits between requests so a live run stays under about 10 a minute.
+5. Press **Download results**. The JSON has schema version 1, the eval set id, version, and hash, your label, the model id the API returned, harness version 2, the run date, total and per-category scores, and each task's checks and trace.
+6. Add that file under `docs/harness/results/` with a new `.json` name. Add an object to `entries` in `docs/harness/results/index.json` with `"file"` set to that name. Pages cannot list a folder, so the leaderboard reads the index. The shape is described in `docs/harness/results/result.schema.json` and checked by `docs/harness/validate-results.js`.
+7. Open a pull request. The issue template is `.github/ISSUE_TEMPLATE/harness-result.md`. The pull request template is `.github/PULL_REQUEST_TEMPLATE/harness-result.md`. `node docs/harness/test.js` must pass. The validator recomputes every score from the checks, checks the eval hash against the current tiny-tools v1 set, checks that every results file is in the index and every scored index entry has a file, and rejects a key-like string, an Authorization header, or a URL to a model endpoint.
+
+A pending index entry has `"pending": true`, a label, and no `file` and no scores. Carrie White (Llama 3.2 3B via llama.cpp) is that kind of row. There are no numbers for her yet. Rajesh will run the eval on the live Pages site and add the real results file in a follow-up PR. That follow-up replaces the pending entry with a `file` entry so the row is scored instead of pending.
 
 ## Roadmap
 
-- v2: IndexedDB keyword memory.
-- v3: a virtual file workspace with write approval.
-- v4: an MCP-style bridge.
-- v5: golden-prompt evals.
+- v2: this leaderboard (the tiny-tools eval, exported results, and the static board).
+- v3: IndexedDB keyword memory. Reuse the keyword-recall code in `docs/chat/memory.js`, and score that memory on this eval set.
+- v4: a virtual file workspace with write approval.
+- v5: an MCP-style bridge.
 - v6: one inbound channel, if GitHub Pages allows it.
 - v7: scheduled runs.
 - v8: a multi-session router.
+
+The earlier golden-prompt evals item is folded into this leaderboard.
 
 ## Limits of v1
 
@@ -149,4 +184,12 @@ The demo releases Planner's claim itself after the handoff is stored, so that st
 
 The budget, approval, and claim ledgers are per browser, not the Python processes. Reset budget clears the spend for the selected session. A paused turn is kept in `sessionStorage` so a reload of this tab can still Approve or Deny. A claim left behind by a closed tab stays until its lease ends (default 15 minutes) or the next demo press clears an item still held by Planner or Writer.
 
-`?stub=1` replays the scripted demo in this browser. It does not call the endpoint and it does not read the API key.
+`?stub=1` replays the scripted demo in this browser, and it replays the scripted eval. It does not call the endpoint and it does not read the API key.
+
+## Limits of v2
+
+The leaderboard ranks files in `results/index.json`. With no scored files it shows an empty board plus the pending Carrie White row, and that row has no numbers. This repository copy does not include a live Carrie result: producing one needs a key, and the endpoint only allows the GitHub Pages origin.
+
+The validator checks that a file matches the current task set and that its scores are the ratios of its own checks. It does not call the model again. Read the trace in the pull request before trusting a perfect score. A stub preview sets `preview` to true so it cannot be submitted as-is. Stripping that flag would still leave a scripted transcript; the trace is the evidence.
+
+Eval tools are mocks. They do not exercise `handoff` or `work_claim`. The loop still accepts one fenced tool call per reply and stops after 3 model calls, so the multi-step tasks fit in that cap. Temperature 0 is what the page sends. A server can still vary. Token counts remain character estimates. The board changes when a pull request updates the index. A live eval is paced, so the ten tasks take a few minutes. The second-call checks look for the fixed mock value, which a reply could repeat without having read the tool if it already knew that word.

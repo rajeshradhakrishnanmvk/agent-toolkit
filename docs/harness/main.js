@@ -14,6 +14,7 @@ import {
   redact,
   createClaims,
 } from "./harness.js";
+import { connectEval, hashEvalSet, runEval } from "./eval.js";
 
 const KEY_NAME = "agent-toolkit.harness.apiKey.v1";
 const PAUSE_NAME = "agent-toolkit.harness.pause.v1";
@@ -44,6 +45,14 @@ const errorEl = document.getElementById("error");
 const promptEl = document.getElementById("prompt");
 const runEl = document.getElementById("run");
 const duoEl = document.getElementById("duo");
+const evalRunEl = document.getElementById("run-eval");
+const evalDownloadEl = document.getElementById("download-eval");
+const evalProgressEl = document.getElementById("eval-progress");
+const evalTableEl = document.getElementById("eval-table");
+const evalBodyEl = document.getElementById("eval-body");
+const evalNoteEl = document.getElementById("eval-note");
+
+let evalFile = null;
 
 let bundle = null;
 let messages = [];
@@ -52,7 +61,8 @@ let busy = false;
 let paused = null;
 
 function setError(text) {
-  errorEl.textContent = redact(text || "", keyEl.value.trim());
+  const secret = stubPreview ? "" : keyEl.value.trim();
+  errorEl.textContent = redact(text || "", secret);
 }
 
 function currentSession() {
@@ -217,6 +227,7 @@ async function turn(extra) {
   if (busy) return;
   busy = true;
   runEl.disabled = true;
+  evalRunEl.disabled = true;
   setError("");
   try {
     const result = await runAgent(agentOptions(extra));
@@ -227,6 +238,7 @@ async function turn(extra) {
   } finally {
     busy = false;
     runEl.disabled = false;
+    evalRunEl.disabled = false;
     await renderBudget();
     await renderPending();
   }
@@ -251,7 +263,7 @@ async function boot() {
   autonomyEl.value = config.autonomy || "supervised";
   baseEl.value = config.baseUrl || "";
   modelEl.value = config.model || "";
-  keyEl.value = sessionStorage.getItem(KEY_NAME) || "";
+  if (!stubPreview) keyEl.value = sessionStorage.getItem(KEY_NAME) || "";
   renderTools();
   renderSystem();
   try {
@@ -280,8 +292,17 @@ async function boot() {
   }
   if (!paused) {
     statusEl.textContent = stubPreview
-      ? "Ready. Stubbed preview is on for Run two agents. No API key is sent."
+      ? "Ready. Stubbed preview is on. No API key is sent."
       : "Ready.";
+  }
+  if (stubPreview) {
+    evalNoteEl.textContent = "Stubbed preview. This run does not read the API key and does not call a model.";
+  }
+  try {
+    const hash = await hashEvalSet();
+    evalNoteEl.textContent += " Eval set tiny-tools version 1. Hash " + hash + ".";
+  } catch (err) {
+    evalNoteEl.textContent += " The eval hash could not be computed in this browser.";
   }
 }
 
@@ -361,6 +382,7 @@ async function turnDuo() {
   busy = true;
   runEl.disabled = true;
   duoEl.disabled = true;
+  evalRunEl.disabled = true;
   setError("");
   try {
     const customPrompt = promptEl.value.trim();
@@ -400,6 +422,7 @@ async function turnDuo() {
     busy = false;
     runEl.disabled = false;
     duoEl.disabled = false;
+    evalRunEl.disabled = false;
     await renderBudget();
     await renderPending();
   }
@@ -430,6 +453,104 @@ document.getElementById("reset-budget").addEventListener("click", async function
     setError(err && err.message ? err.message : "Could not reset the budget.");
   }
 });
+
+function percent(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return (Math.round(value * 1000) / 10).toFixed(1) + "%";
+}
+
+function evalRow(id, category, score) {
+  let row = document.getElementById("eval-row-" + id);
+  if (!row) {
+    row = document.createElement("tr");
+    row.id = "eval-row-" + id;
+    evalBodyEl.appendChild(row);
+  }
+  row.textContent = "";
+  [id, category, score].forEach(function (text) {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    row.appendChild(cell);
+  });
+}
+
+evalRunEl.addEventListener("click", function () {
+  startEval();
+});
+
+evalDownloadEl.addEventListener("click", function () {
+  if (!evalFile) return;
+  const blob = new Blob([JSON.stringify(evalFile, null, 2) + "\n"], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "tiny-tools-result.json";
+  link.click();
+  URL.revokeObjectURL(url);
+});
+
+async function startEval() {
+  if (busy) return;
+  let connection;
+  try {
+    connection = connectEval({
+      stub: stubPreview,
+      readKey: function () { return keyEl.value.trim(); },
+      readLabel: function () { return document.getElementById("model-label").value; },
+      readModel: function () { return modelEl.value; },
+      connect: function () { return provider(); },
+    });
+  } catch (err) {
+    setError(err && err.message ? err.message : "Add an API key before a live eval.");
+    return;
+  }
+  if (!stubPreview) sessionStorage.setItem(KEY_NAME, keyEl.value.trim());
+  busy = true;
+  runEl.disabled = true;
+  duoEl.disabled = true;
+  evalRunEl.disabled = true;
+  evalDownloadEl.disabled = true;
+  evalFile = null;
+  setError("");
+  evalBodyEl.textContent = "";
+  evalTableEl.hidden = false;
+  evalProgressEl.textContent = connection.stub ? "Starting the stubbed preview…" : "Starting the eval…";
+  try {
+    const file = await runEval({
+      stub: connection.stub,
+      provider: connection.provider,
+      label: connection.label,
+      gapMs: connection.stub ? 0 : undefined,
+      onProgress: function (event) {
+        if (event.phase === "wait") {
+          const seconds = Math.max(1, Math.round(event.waitMs / 1000));
+          evalProgressEl.textContent = "Waiting " + seconds + "s to stay under 10 requests a minute.";
+          return;
+        }
+        if (event.phase === "start") {
+          evalProgressEl.textContent = "Task " + (event.index + 1) + " of " + event.total + ": " + event.id;
+          evalRow(event.id, event.category, "…");
+          return;
+        }
+        if (event.phase === "done") {
+          evalRow(event.id, event.category, event.passed + "/" + event.totalChecks);
+        }
+      },
+    });
+    evalFile = file;
+    const suffix = file.preview ? " Stubbed preview. No API key was read and no model was called." : "";
+    evalProgressEl.textContent = "Score " + percent(file.scores.value) + " (" + file.scores.passed + "/" + file.scores.total + ")." + suffix;
+    evalDownloadEl.disabled = false;
+  } catch (err) {
+    setError(err && err.message ? err.message : "The eval failed.");
+    evalProgressEl.textContent = "The eval stopped with an error.";
+  } finally {
+    busy = false;
+    runEl.disabled = false;
+    duoEl.disabled = false;
+    evalRunEl.disabled = false;
+  }
+}
 
 document.getElementById("trace-download").addEventListener("click", function () {
   const blob = new Blob([trace.toJSONL()], { type: "application/jsonl" });

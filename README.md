@@ -612,6 +612,8 @@ The persona is not fixed in the page. A global profile, a soul profile, and a se
 
 The default endpoint and model match the chat page (`https://chat.srv1536099.hstgr.cloud/v1`, `Llama-3.2-3B-Instruct`). v0 tools are `clock`, `budget`, and `ask_human`. v1 adds `handoff` and `work_claim`, and a two-agent demo: Planner and Writer share one session, and a blocked handoff stops the run. The budget, approval, and claim ledgers live in `localStorage`. A trace downloads as JSONL. Details, the profile schema, and the v2–v8 roadmap are in `docs/harness/README.md`.
 
+v2 is a leaderboard for tiny-model tool calling. The fixed eval set is `tiny-tools` version 1. Run it on the harness page, download the JSON, and submit it by pull request under `docs/harness/results/`. The board is `docs/harness/leaderboard/`. Carrie White (Llama 3.2 3B via llama.cpp) is a pending live run, with no scores, until that eval is run on the Pages site and the results file lands in a follow-up pull request.
+
 ## Tests
 
 ```bash

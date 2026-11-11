@@ -1,0 +1,72 @@
+{
+  "title": "Harness tiny-tools result",
+  "description": "A leaderboard submission. Scores are checks passed divided by checks. The validator recomputes them. Do not put an API key, an Authorization header, or a model endpoint URL in this file.",
+  "type": "object",
+  "required": ["schemaVersion", "evalSet", "model", "harnessVersion", "runDate", "scores", "tasks"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "preview": { "type": "boolean", "description": "True only for a stub preview. Those files are rejected." },
+    "evalSet": {
+      "type": "object",
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": { "const": "tiny-tools" },
+        "version": { "const": 1 },
+        "hash": { "type": "string", "minLength": 64, "maxLength": 64 }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["label", "id"],
+      "properties": {
+        "label": { "type": "string", "description": "Name typed on the harness page." },
+        "id": { "type": "string", "description": "Model id returned by the API. Empty when the API omits it." }
+      }
+    },
+    "harnessVersion": { "const": "2" },
+    "runDate": { "type": "string" },
+    "scores": {
+      "type": "object",
+      "required": ["passed", "total", "value", "categories"],
+      "properties": {
+        "passed": { "type": "integer" },
+        "total": { "type": "integer" },
+        "value": { "type": "number" },
+        "categories": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["passed", "total", "value"]
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "passed", "total", "value", "checks", "trace"],
+        "properties": {
+          "id": { "type": "string" },
+          "category": { "type": "string" },
+          "passed": { "type": "integer" },
+          "total": { "type": "integer" },
+          "value": { "type": "number" },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "ok"],
+              "properties": {
+                "id": { "type": "string" },
+                "ok": { "type": "boolean" },
+                "detail": { "type": "string" }
+              }
+            }
+          },
+          "trace": { "type": "array" }
+        }
+      }
+    }
+  }
+}
