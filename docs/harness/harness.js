@@ -852,7 +852,8 @@ export async function chatComplete(options) {
     }
     const message = data && data.choices && data.choices[0] && data.choices[0].message;
     const content = message && typeof message.content === "string" ? message.content : "";
-    return { content: content };
+    const model = data && typeof data.model === "string" ? data.model : "";
+    return { content: content, model: model };
   }
   throw new HarnessError("The endpoint rate-limited this request (429). The public host allows about 10 requests a minute.", { status: 429, code: "rate_limit" });
 }

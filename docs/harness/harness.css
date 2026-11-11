@@ -142,6 +142,51 @@ pre {
 
 .system summary { cursor: pointer; }
 
+.top { padding: 1.25rem 1.25rem 0; }
+
+.board { padding: 0 1.25rem 2rem; }
+
+.board .status, #eval-note, #eval-progress { overflow-wrap: anywhere; }
+
+.eval-panel { max-width: 44rem; }
+
+.inline-link { align-self: center; }
+
+.table-wrap { overflow-x: auto; }
+
+.eval-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+
+.eval-table th, .eval-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.4rem 0.45rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.eval-table caption { text-align: left; margin: 0 0 0.35rem; }
+
+tr.pending { background: #f3ead2; }
+
+.badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
 @media (max-width: 800px) {
   .app { grid-template-columns: 1fr; }
   .side { border-right: 0; border-bottom: 1px solid var(--line); }

@@ -25,6 +25,7 @@ import {
   blockedDemoHandoff,
   DEMO_MODEL_CAP,
 } from "./harness.js";
+import { registerEvalTests } from "./eval-tests.js";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message || "assertion failed");
@@ -755,6 +756,8 @@ test("two agents hand off in 4 model calls, and a blocked handoff stops the run"
   assert(blocked.traceText.indexOf("\"soul\":\"planner\"") >= 0);
   assert(blocked.traceText.indexOf("\"soul\":\"writer\"") >= 0);
 });
+
+registerEvalTests({ test: test, assert: assert, equal: equal, isNode: isNode });
 
 export async function runTests() {
   const results = [];

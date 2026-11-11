@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leaderboard — harness</title>
+  <meta name="description" content="Tiny-model tool-calling scores for the harness tiny-tools eval.">
+  <link rel="stylesheet" href="../harness.css">
+</head>
+<body>
+  <a class="skip" href="#board">Skip to leaderboard</a>
+  <header class="top">
+    <p class="mark"><a href="../">Harness</a></p>
+    <h1>Leaderboard</h1>
+    <p class="lede">Ranks come from the checks in each results file. A pending row has no score until a live run is added.</p>
+  </header>
+  <main class="board">
+    <p id="meta" class="status" role="status">Loading the eval set…</p>
+    <p id="empty" class="muted" hidden>No scored results yet.</p>
+    <div class="table-wrap">
+      <table id="board" class="eval-table">
+        <caption class="sr">Scored models</caption>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Model</th>
+            <th>Total</th>
+            <th>Tool choice</th>
+            <th>Arguments</th>
+            <th>No tool</th>
+            <th>Multi-step</th>
+            <th>Approval</th>
+            <th>Budget</th>
+            <th>Run date</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="scored"></tbody>
+      </table>
+    </div>
+    <h2>Waiting on a live run</h2>
+    <div class="table-wrap">
+      <table class="eval-table">
+        <caption class="sr">Pending live runs</caption>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Total</th>
+            <th>Status</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="pending"></tbody>
+      </table>
+    </div>
+  </main>
+  <script type="module" src="leaderboard.js"></script>
+</body>
+</html>
